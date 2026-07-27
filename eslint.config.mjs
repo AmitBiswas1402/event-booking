@@ -13,7 +13,6 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
-  ignorePatterns(["!.eslintrc.js", "!.eslintrc.cjs", "!.eslintrc.mjs"]),
 ]);
 
 export default eslintConfig;
