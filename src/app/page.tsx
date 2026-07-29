@@ -1,3 +1,4 @@
+import FeatMovies from "@/components/FeatMovies";
 import HeroSectionBanners from "@/components/HeroSectionBanner";
 import Navbar from "@/components/Navbar";
 
@@ -22,6 +23,7 @@ const HomePage = () => {
               See All &rsaquo;
             </a>
           </div>
+          <FeatMovies />
         </section>
       </main>
     </div>
