@@ -7,15 +7,8 @@ import Search from "./Search";
 import { SignInButton, UserButton, useUser } from "@clerk/nextjs";
 import {
   ChevronDown,
-  Menu,
   MapPin,
   X,
-  Ticket,
-  Gift,
-  Tag,
-  Building2,
-  HelpCircle,
-  Bell,
 } from "lucide-react";
 
 const CITIES = [
@@ -53,44 +46,40 @@ const Navbar = () => {
   }, []);
 
   return (
-    <header className="w-full bg-white dark:bg-slate-900 shadow-xs border-b border-gray-100 dark:border-gray-800 sticky top-0 z-50">
-      {/* Top Navbar */}
-      <div className="max-w-7xl mx-auto px-4 md:px-8 py-2.5 flex items-center justify-between gap-4 md:gap-8">
-        {/* Left: Logo & Search */}
-        <div className="flex items-center gap-6 flex-1 max-w-4xl">
+    <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-[#10121a]/92 shadow-lg shadow-black/20 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 md:gap-8 md:px-8">
+        <div className="flex flex-1 items-center gap-6">
           <Logo />
-          <div className="hidden sm:block flex-1">
+          <div className="hidden flex-1 sm:block">
             <Search />
           </div>
         </div>
 
-        {/* Right: Location, Sign In / User & Hamburger Menu */}
-        <div className="flex items-center gap-4 sm:gap-6 shrink-0">
-          {/* City Location Selector */}
+        <div className="flex shrink-0 items-center gap-3 sm:gap-5">
           <div className="relative" ref={cityDropdownRef}>
             <button
               onClick={() => setIsCityOpen(!isCityOpen)}
-              className="flex items-center gap-1 text-xs md:text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-gray-900 dark:hover:text-white transition-colors py-1 cursor-pointer"
+              className="flex cursor-pointer items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-pink-400/50 hover:text-white md:text-sm"
             >
+              <MapPin className="size-3.5 text-pink-300" />
               <span>{selectedCity}</span>
               <ChevronDown
-                className={`w-3.5 h-3.5 text-gray-500 transition-transform ${isCityOpen ? "rotate-180" : ""}`}
+                className={`size-3.5 text-slate-400 transition-transform ${isCityOpen ? "rotate-180" : ""}`}
               />
             </button>
 
-            {/* City Dropdown Menu */}
             {isCityOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-gray-100 dark:border-gray-700 p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-                <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-100 dark:border-gray-700">
-                  <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1">
-                    <MapPin className="w-3.5 h-3.5 text-[#f84464]" /> Select
-                    City
+              <div className="animate-in fade-in slide-in-from-top-2 absolute right-0 z-50 mt-2 w-64 rounded-xl border border-white/10 bg-[#171923] p-3 shadow-2xl shadow-black/40 duration-150">
+                <div className="mb-2 flex items-center justify-between border-b border-white/10 pb-2">
+                  <span className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    <MapPin className="size-3.5 text-pink-400" /> Select city
                   </span>
                   <button
                     onClick={() => setIsCityOpen(false)}
-                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                    className="rounded-full p-1 text-slate-500 transition-colors hover:bg-white/10 hover:text-white"
+                    aria-label="Close city menu"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="size-4" />
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-1 max-h-56 overflow-y-auto">
@@ -101,10 +90,10 @@ const Navbar = () => {
                         setSelectedCity(city);
                         setIsCityOpen(false);
                       }}
-                      className={`text-left text-xs px-2.5 py-1.5 rounded transition-colors ${
+                      className={`rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
                         selectedCity === city
-                          ? "bg-[#f84464]/10 text-[#f84464] font-semibold"
-                          : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-700"
+                          ? "bg-pink-500/15 font-semibold text-pink-200"
+                          : "text-slate-300 hover:bg-white/10 hover:text-white"
                       }`}
                     >
                       {city}
@@ -115,11 +104,10 @@ const Navbar = () => {
             )}
           </div>
 
-          {/* Authentication */}
           <div>
             {!isSignedIn ? (
               <SignInButton mode="modal">
-                <button className="bg-[#f84464] hover:bg-[#e03756] text-white text-xs md:text-sm font-medium px-4 py-1.5 rounded cursor-pointer transition-colors shadow-2xs">
+                <button className="cursor-pointer rounded-full bg-pink-500 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-pink-950/30 transition-colors hover:bg-pink-400 md:text-sm">
                   Sign in
                 </button>
               </SignInButton>
@@ -130,30 +118,28 @@ const Navbar = () => {
         </div>
       </div>
 
-      {/* Mobile Search Bar (Visible on mobile screens) */}
       <div className="sm:hidden px-4 pb-2">
         <Search />
       </div>
 
-      {/* Secondary / Sub Navbar Header */}
-      <div className="bg-[#f5f5f5] dark:bg-slate-950 border-t border-b border-gray-200 dark:border-gray-800 text-xs md:text-sm">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 py-2 flex items-center justify-between gap-15 overflow-x-auto whitespace-nowrap scrollbar-none">
-          <Link href="#" className="hover:text-[#f84464] transition-colors">
+      <div className="border-t border-white/8 bg-[#0b0c12]/80 text-xs md:text-sm">
+        <nav className="mx-auto flex max-w-7xl items-center gap-8 overflow-x-auto whitespace-nowrap px-4 py-2.5 text-slate-400 md:px-8">
+          <Link href="#" className="transition-colors hover:text-pink-300">
             Movies
           </Link>
-          <Link href="#" className="hover:text-[#f84464] transition-colors">
+          <Link href="#" className="transition-colors hover:text-pink-300">
             Events
           </Link>
-          <Link href="#" className="hover:text-[#f84464] transition-colors">
+          <Link href="#" className="transition-colors hover:text-pink-300">
             Plays
           </Link>
-          <Link href="#" className="hover:text-[#f84464] transition-colors">
+          <Link href="#" className="transition-colors hover:text-pink-300">
             Sports
           </Link>
-          <Link href="#" className="hover:text-[#f84464] transition-colors">
+          <Link href="#" className="transition-colors hover:text-pink-300">
             Activities
           </Link>
-        </div>
+        </nav>
       </div>
     </header>
   );

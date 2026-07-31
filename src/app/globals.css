@@ -49,7 +49,7 @@
 }
 
 :root {
-  --background: #0d0e12;
+  --background: #090a0f;
   --foreground: #f3f4f6;
   --card: #16161d;
   --card-foreground: #f3f4f6;
@@ -79,7 +79,7 @@
 }
 
 .dark {
-  --background: #0d0e12;
+  --background: #090a0f;
   --foreground: #f3f4f6;
   --card: #16161d;
   --card-foreground: #f3f4f6;
@@ -112,7 +112,7 @@
     @apply border-border outline-ring/50;
   }
   body {
-    background-color: #0d0e12;
+    background-color: #090a0f;
     color: #f3f4f6;
     @apply font-sans antialiased;
   }

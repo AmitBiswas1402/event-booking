@@ -3,9 +3,9 @@ import Link from 'next/link'
 
 const Logo = () => {
   return (
-    <Link href="/" className="flex items-center select-none font-bold text-xl md:text-2xl tracking-tight shrink-0">
-      <span className="text-slate-900 dark:text-white font-extrabold">Book</span>
-      <span className="bg-[#f84464] text-white px-1.5 py-0.5 rounded text-xs md:text-sm font-black uppercase tracking-wider mx-0.5 inline-flex items-center justify-center shadow-xs">
+    <Link href="/" className="flex shrink-0 select-none items-center text-xl font-bold tracking-tight md:text-2xl">
+      <span className="font-extrabold text-white">Book</span>
+      <span className="mx-1 inline-flex items-center justify-center rounded-md bg-pink-500 px-2 py-1 text-xs font-black uppercase tracking-wider text-white shadow-lg shadow-pink-950/30 md:text-sm">
         Events
       </span>
     </Link>

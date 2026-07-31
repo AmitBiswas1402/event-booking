@@ -1,55 +1,67 @@
 import FeatMovies from "@/components/FeatMovies";
-import FeatConcert from "@/components/FeaturedConcert";
+import FeatConcert from "@/components/FeatConcerts";
 import HeroSectionBanners from "@/components/HeroSectionBanner";
 import Navbar from "@/components/Navbar";
+import FeatSports from "@/components/FeatSports";
+
+const SectionHeader = ({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle: string;
+}) => (
+  <div className="mb-4 flex items-end justify-between gap-4">
+    <div>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-pink-300/80">
+        Curated picks
+      </p>
+      <h2 className="mt-1 text-xl font-bold tracking-tight text-white md:text-2xl">
+        {title}
+      </h2>
+      <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+    </div>
+    <a
+      href="#"
+      className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:border-pink-400/60 hover:text-pink-200"
+    >
+      See all
+    </a>
+  </div>
+);
 
 const HomePage = () => {
   return (
-    <div className="flex flex-col min-h-screen bg-[#0d0e12] font-sans">
+    <div className="flex min-h-screen flex-col bg-[#090a0f] font-sans text-white">
       <Navbar />
 
-      <main className="flex-1 w-full">
-        {/* Hero Banner Carousel */}
-        <section className="w-full bg-[#0d0e12] py-4 overflow-hidden">
+      <main className="flex-1 overflow-hidden">
+        <section className="relative border-b border-white/5 bg-[radial-gradient(circle_at_top_left,rgba(248,68,100,0.16),transparent_34%),linear-gradient(180deg,#11131d_0%,#090a0f_100%)] py-6 md:py-8">
           <HeroSectionBanners />
         </section>
 
-        {/* Recommended Movies */}
-        <section className="max-w-7xl mx-auto px-4 md:px-8 pt-8 pb-4">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-lg md:text-xl font-bold text-white">
-                Recommended Movies
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Handpicked just for you</p>
-            </div>
-            <a
-              href="#"
-              className="text-xs md:text-sm font-semibold text-pink-400 hover:text-pink-300 transition-colors flex items-center gap-1"
-            >
-              See All <span className="text-base leading-none">›</span>
-            </a>
-          </div>
+        <section className="mx-auto max-w-7xl px-4 pb-4 pt-9 md:px-8">
+          <SectionHeader
+            title="Recommended movies"
+            subtitle="Fresh releases and audience favourites near you."
+          />
           <FeatMovies />
         </section>
 
-        {/* Featured Concerts & Events */}
-        <section className="max-w-7xl mx-auto px-4 md:px-8 pt-6 pb-10">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-lg md:text-xl font-bold text-white">
-                Featured Concerts & Events
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Live shows near you</p>
-            </div>
-            <a
-              href="#"
-              className="text-xs md:text-sm font-semibold text-pink-400 hover:text-pink-300 transition-colors flex items-center gap-1"
-            >
-              See All <span className="text-base leading-none">›</span>
-            </a>
-          </div>
+        <section className="mx-auto max-w-7xl px-4 py-7 md:px-8">
+          <SectionHeader
+            title="Featured concerts and events"
+            subtitle="Live shows, parties, and weekend plans worth booking."
+          />
           <FeatConcert />
+        </section>
+
+        <section className="mx-auto max-w-7xl px-4 pb-14 pt-7 md:px-8">
+          <SectionHeader
+            title="Featured sports"
+            subtitle="Matches, tournaments, and active weekends around town."
+          />
+          <FeatSports />
         </section>
       </main>
     </div>
