@@ -62,7 +62,7 @@ export const users = pgTable(
 
     imageUrl: text("image_url"),
 
-    role: roleEnum("role").default("AUDIENCE").notNull(),
+    role: roleEnum("role"),
 
     createdAt: timestamp("created_at", {
       withTimezone: true,

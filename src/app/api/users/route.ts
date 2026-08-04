@@ -32,7 +32,7 @@ async function syncUserInDb(clerkUser: NonNullable<Awaited<ReturnType<typeof cur
   }
 
   if (!existing) {
-    await db.insert(users).values({ ...profile, role: isAdmin ? "ADMIN" : "AUDIENCE" })
+    await db.insert(users).values({ ...profile, role: isAdmin ? "ADMIN" : null })
   } else {
     const newRole = isAdmin ? "ADMIN" : existing.role
     await db

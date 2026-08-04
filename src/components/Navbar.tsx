@@ -25,9 +25,10 @@ const CITIES = [
 ];
 
 const Navbar = () => {
-  const { isSignedIn } = useUser();
+  const { isSignedIn, user } = useUser();
   const [selectedCity, setSelectedCity] = useState("Kolkata");
   const [isCityOpen, setIsCityOpen] = useState(false);
+  const [roleInfo, setRoleInfo] = useState<{ userId: string; role: string } | null>(null);
 
   const cityDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -44,6 +45,44 @@ const Navbar = () => {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!isSignedIn || !user) return;
+    let cancelled = false;
+
+    // POST syncs the Clerk profile into the DB and returns the user with their role.
+    // Retry a few times because right after sign-in Clerk's session may not have
+    // propagated server-side yet, which makes the first call fail.
+    const loadRole = async (attempt = 0) => {
+      try {
+        const res = await fetch("/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!res.ok) throw new Error(`Sync failed (${res.status})`);
+        const data = await res.json();
+        if (cancelled) return;
+        const role: string | null = data.role ?? null;
+        setRoleInfo({ userId: user.id, role: role ?? "" });
+        // Non-admin users without a role must pick one first
+        if (!role && window.location.pathname !== "/choose-role") {
+          window.location.href = "/choose-role";
+        }
+      } catch {
+        if (!cancelled && attempt < 3) {
+          window.setTimeout(() => loadRole(attempt + 1), 700 * (attempt + 1));
+        }
+      }
+    };
+    loadRole();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn, user]);
+
+  const isAdmin = isSignedIn && roleInfo?.userId === user?.id && roleInfo.role === "ADMIN";
+  const isOrganizer = isSignedIn && roleInfo?.userId === user?.id && roleInfo.role === "ORGANIZER";
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-[#10121a]/92 shadow-lg shadow-black/20 backdrop-blur-xl">
@@ -112,7 +151,25 @@ const Navbar = () => {
                 </button>
               </SignInButton>
             ) : (
-              <UserButton />
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                {isAdmin && (
+                  <Link
+                    href="/admin"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-pink-500 px-3 py-2 text-xs font-bold text-white shadow-lg shadow-pink-950/30 transition-colors hover:bg-pink-400 md:text-sm"
+                  >
+                    Admin Dashboard
+                  </Link>
+                )}
+                {isOrganizer && (
+                  <Link
+                    href="/organizer"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-amber-400 to-orange-500 px-3 py-2 text-xs font-bold text-white shadow-lg transition-colors hover:opacity-90 md:text-sm"
+                  >
+                    Put up an event
+                  </Link>
+                )}
+                <UserButton />
+              </div>
             )}
           </div>
         </div>
@@ -126,9 +183,6 @@ const Navbar = () => {
         <nav className="mx-auto flex max-w-7xl items-center gap-8 overflow-x-auto whitespace-nowrap px-4 py-2.5 text-slate-400 md:px-8">
           <Link href="#" className="transition-colors hover:text-pink-300">
             Movies
-          </Link>
-          <Link href="#" className="transition-colors hover:text-pink-300">
-            Events
           </Link>
           <Link href="#" className="transition-colors hover:text-pink-300">
             Plays
