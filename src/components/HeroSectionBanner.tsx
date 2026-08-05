@@ -1,27 +1,91 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
-import { heroSec } from "@/lib/HeroSection"
+import img185406702 from "@/images/185406702_10752955.jpg"
+import img27260590 from "@/images/27260590_7299426.jpg"
+import img30878067 from "@/images/30878067_7734528.jpg"
+import img6540183 from "@/images/6540183_3315547.jpg"
+import img93272576 from "@/images/93272576_10062231.jpg"
+import img9397614 from "@/images/9397614_4163020.jpg"
 
-// Create extended slides array for seamless infinite looping flow
-const extendedSlides = [
-  { ...heroSec[heroSec.length - 1], uniqueId: "clone-prev-last" },
-  ...heroSec.map((item) => ({ ...item, uniqueId: `real-${item.id}` })),
-  { ...heroSec[0], uniqueId: "clone-next-first" },
+type Slide = {
+  id: number
+  title: string
+  category: string
+  image: string
+  slug: string
+}
+
+type ExtendedSlide = Slide & { uniqueId: string }
+
+const STATIC_SLIDES: Slide[] = [
+  {
+    id: 1,
+    title: "Live Concerts",
+    category: "Concerts",
+    image: img185406702.src,
+    slug: "/events",
+  },
+  {
+    id: 2,
+    title: "Blockbuster Movies",
+    category: "Movies",
+    image: img27260590.src,
+    slug: "/events",
+  },
+  {
+    id: 3,
+    title: "Sports & Tournaments",
+    category: "Sports",
+    image: img30878067.src,
+    slug: "/events",
+  },
+  {
+    id: 4,
+    title: "Festival Nights",
+    category: "Concerts",
+    image: img6540183.src,
+    slug: "/events",
+  },
+  {
+    id: 5,
+    title: "Rock Shows",
+    category: "Concerts",
+    image: img93272576.src,
+    slug: "/events",
+  },
+  {
+    id: 6,
+    title: "Weekend Parties",
+    category: "Events",
+    image: img9397614.src,
+    slug: "/events",
+  },
 ]
 
 export default function HeroSectionBanners() {
+  const router = useRouter()
+
+  const slides: Slide[] = STATIC_SLIDES
+  const realSlidesCount = slides.length
+  const extendedSlides: ExtendedSlide[] = realSlidesCount
+    ? [
+        { ...slides[realSlidesCount - 1], uniqueId: "clone-prev-last" },
+        ...slides.map((item) => ({ ...item, uniqueId: `real-${item.id}` })),
+        { ...slides[0], uniqueId: "clone-next-first" },
+      ]
+    : []
+
   // Start at index 1 (the first real slide in extendedSlides)
   const [currentIndex, setCurrentIndex] = useState(1)
   const [isTransitioning, setIsTransitioning] = useState(true)
   const [isPaused, setIsPaused] = useState(false)
   const [isDesktop, setIsDesktop] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-
-  const realSlidesCount = heroSec.length
 
   // Handle window resize to accurately calculate exact centering offsets
   useEffect(() => {
@@ -70,7 +134,7 @@ export default function HeroSectionBanners() {
       }, 600)
       return () => clearTimeout(timer)
     }
-  }, [currentIndex, realSlidesCount])
+  }, [currentIndex, realSlidesCount, extendedSlides.length])
 
   // Re-enable transition after silent reset
   useEffect(() => {
@@ -100,6 +164,8 @@ export default function HeroSectionBanners() {
     ? `translateX(calc(50% - 600px - ${currentIndex} * 1216px))`
     : `translateX(calc(7.5vw - ${currentIndex} * (85vw + 12px)))`
 
+  if (realSlidesCount === 0) return null
+
   return (
     <div
       ref={containerRef}
@@ -124,11 +190,15 @@ export default function HeroSectionBanners() {
               <div
                 key={`${banner.uniqueId}-${index}`}
                 onClick={() => {
-                  const targetRealIndex = (banner.id - 1) % realSlidesCount
-                  goToSlide(targetRealIndex)
+                  if (isActive) {
+                    router.push(banner.slug)
+                  } else {
+                    const targetRealIndex = (banner.id - 1) % realSlidesCount
+                    goToSlide(targetRealIndex)
+                  }
                 }}
                 className={cn(
-                  "relative aspect-[1200/300] w-[86vw] shrink-0 cursor-pointer overflow-hidden rounded-xl ring-1 ring-white/10 transition-all duration-500 md:w-[1200px] md:rounded-2xl",
+                  "relative aspect-1200/300 w-[86vw] shrink-0 cursor-pointer overflow-hidden rounded-xl ring-1 ring-white/10 transition-all duration-500 md:w-300 md:rounded-2xl",
                   isActive
                     ? "z-10 scale-100 opacity-100 shadow-2xl shadow-black/35"
                     : "scale-[0.96] opacity-55 hover:opacity-80"
@@ -136,13 +206,19 @@ export default function HeroSectionBanners() {
               >
                 <Image
                   src={banner.image}
-                  alt={banner.category || banner.title || ""}
+                  alt={banner.title || banner.category || ""}
                   fill
                   sizes="(max-width: 768px) 85vw, 1200px"
                   className="object-cover"
                   priority={index === 1}
                 />
                 <div className="absolute inset-0 bg-linear-to-t from-black/35 via-transparent to-transparent" />
+                <div className="absolute bottom-3 left-4 md:bottom-4 md:left-6">
+                  <span className="mb-1.5 inline-block rounded-full bg-pink-500/90 px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider text-white">
+                    {banner.category}
+                  </span>
+                  <p className="text-sm font-bold text-white drop-shadow md:text-base">{banner.title}</p>
+                </div>
               </div>
             )
           })}
@@ -168,7 +244,7 @@ export default function HeroSectionBanners() {
 
       {/* Navigation Dots (Pagination) */}
       <div className="flex justify-center items-center gap-1.5 mt-3">
-        {heroSec.map((_, index) => (
+        {slides.map((_, index) => (
           <button
             key={index}
             onClick={() => goToSlide(index)}
@@ -185,5 +261,3 @@ export default function HeroSectionBanners() {
     </div>
   )
 }
-
-

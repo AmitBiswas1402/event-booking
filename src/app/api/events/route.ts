@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { randomUUID } from "crypto"
-import { desc, eq, gte, inArray } from "drizzle-orm"
+import { and, desc, eq, gte, inArray } from "drizzle-orm"
 import { db } from "@/lib"
 import {
   categories,
@@ -8,9 +8,13 @@ import {
   shows,
   ticketTypes,
   venues,
+  venueSeatLayouts,
 } from "@/db/schema"
 import { requireRole } from "@/lib/authorization"
 import { slugify } from "@/lib/format"
+import { getCurrentDbUser } from "@/lib/authorization"
+import { materializeShowSeats } from "@/lib/seatLayout"
+import type { seatCategoryEnum } from "@/db/schema"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -19,6 +23,7 @@ type TicketTypeInput = {
   name: string
   price: number
   quantity: number
+  seatCategory?: (typeof seatCategoryEnum.enumValues)[number]
 }
 
 type ShowInput = {
@@ -47,6 +52,7 @@ type EventInput = {
   ageRestriction?: string
   duration?: number
   categoryId: string
+  venueId?: string
   venue: VenueInput
   shows: ShowInput[]
 }
@@ -72,6 +78,9 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const statusFilter = searchParams.get("status")
+    const organizerFilter = searchParams.get("organizer")
+    const organizerId =
+      organizerFilter === "me" ? (await getCurrentDbUser())?.id ?? null : organizerFilter
 
     const list = await db
       .select({
@@ -89,11 +98,14 @@ export async function GET(req: Request) {
       .innerJoin(categories, eq(events.categoryId, categories.id))
       .innerJoin(venues, eq(events.venueId, venues.id))
       .where(
-        statusFilter === "PUBLISHED"
-          ? eq(events.status, "PUBLISHED")
-          : statusFilter === "DRAFT"
-            ? eq(events.status, "DRAFT")
-            : gte(events.createdAt, new Date(0))
+        and(
+          organizerId ? eq(events.organizerId, organizerId) : undefined,
+          statusFilter === "PUBLISHED"
+            ? eq(events.status, "PUBLISHED")
+            : statusFilter === "DRAFT"
+              ? eq(events.status, "DRAFT")
+              : gte(events.createdAt, new Date(0))
+        )
       )
       .orderBy(desc(events.createdAt))
 
@@ -169,7 +181,7 @@ export async function POST(req: Request) {
     if (!body.categoryId) {
       return NextResponse.json({ error: "A category is required" }, { status: 400 })
     }
-    if (!body.venue?.name || !body.venue?.address || !body.venue?.city || !body.venue?.state) {
+    if (!body.venueId && (!body.venue?.name || !body.venue?.address || !body.venue?.city || !body.venue?.state)) {
       return NextResponse.json({ error: "Venue details are incomplete" }, { status: 400 })
     }
     if (!Array.isArray(body.shows) || body.shows.length === 0) {
@@ -179,6 +191,13 @@ export async function POST(req: Request) {
     for (const show of body.shows) {
       if (!show.showDate || !show.startTime) {
         return NextResponse.json({ error: "Every show needs a date and start time" }, { status: 400 })
+      }
+      const parsedStart = new Date(show.startTime)
+      if (Number.isNaN(parsedStart.getTime())) {
+        return NextResponse.json({ error: "Show start time is not a valid date" }, { status: 400 })
+      }
+      if (show.endTime && Number.isNaN(new Date(show.endTime).getTime())) {
+        return NextResponse.json({ error: "Show end time is not a valid date" }, { status: 400 })
       }
       if (!Number.isInteger(show.totalSeats) || show.totalSeats <= 0) {
         return NextResponse.json(
@@ -211,78 +230,155 @@ export async function POST(req: Request) {
 
     const slug = await buildUniqueSlug(body.title)
 
-    const venueId = randomUUID()
     const eventId = randomUUID()
     const showIds = body.shows.map(() => randomUUID())
 
-    const venueInsert = db
-      .insert(venues)
-      .values({
-        id: venueId,
-        organizerId: access.user.id,
-        name: body.venue.name,
-        slug: `${slugify(body.venue.name)}-${randomUUID().slice(0, 6)}`,
-        description: body.venue.description ?? null,
-        address: body.venue.address,
-        city: body.venue.city,
-        state: body.venue.state,
-        country: body.venue.country ?? "India",
-        postalCode: body.venue.postalCode ?? null,
-        capacity: body.shows.reduce((sum, s) => sum + s.totalSeats, 0),
-      })
-      .returning({ id: venues.id })
+    // Resolve the venue: reuse an existing one (with its seat layout) or create inline.
+    let venueId: string
+    let seatLayoutId: string | null = null
 
-    const eventInsert = db
-      .insert(events)
-      .values({
-        id: eventId,
-        organizerId: access.user.id,
-        categoryId: body.categoryId,
-        venueId,
-        title: body.title,
-        slug,
-        description: body.description ?? null,
-        bannerUrl: body.bannerUrl ?? null,
-        language: body.language ?? null,
-        duration: body.duration ?? null,
-        ageRestriction: body.ageRestriction ?? null,
-        status: "PUBLISHED",
-      })
-      .returning({ id: events.id })
+    if (body.venueId) {
+      const [existingVenue] = await db
+        .select()
+        .from(venues)
+        .where(eq(venues.id, body.venueId))
+        .limit(1)
+      if (!existingVenue || existingVenue.organizerId !== access.user.id) {
+        return NextResponse.json({ error: "Venue not found" }, { status: 404 })
+      }
+      venueId = existingVenue.id
 
-    const showInsert = db
-      .insert(shows)
-      .values(
-        body.shows.map((show, index) => ({
-          id: showIds[index],
-          eventId,
-          showDate: new Date(show.showDate),
-          startTime: new Date(show.startTime),
-          endTime: show.endTime ? new Date(show.endTime) : null,
-          totalSeats: show.totalSeats,
-          availableSeats: show.totalSeats,
-        }))
-      )
-      .returning({ id: shows.id })
+      const [layout] = await db
+        .select({ id: venueSeatLayouts.id })
+        .from(venueSeatLayouts)
+        .where(eq(venueSeatLayouts.venueId, venueId))
+        .limit(1)
+      seatLayoutId = layout?.id ?? null
+    } else {
+      venueId = randomUUID()
+      const venueInsert = db
+        .insert(venues)
+        .values({
+          id: venueId,
+          organizerId: access.user.id,
+          name: body.venue.name,
+          slug: `${slugify(body.venue.name)}-${randomUUID().slice(0, 6)}`,
+          description: body.venue.description ?? null,
+          address: body.venue.address,
+          city: body.venue.city,
+          state: body.venue.state,
+          country: body.venue.country ?? "India",
+          postalCode: body.venue.postalCode ?? null,
+          capacity: body.shows.reduce((sum, s) => sum + s.totalSeats, 0),
+        })
+        .returning({ id: venues.id })
 
-    const ticketInsert = db
-      .insert(ticketTypes)
-      .values(
-        body.shows.flatMap((show, showIndex) =>
-          show.ticketTypes.map((tt) => ({
-            id: randomUUID(),
-            showId: showIds[showIndex],
-            name: tt.name,
-            description: null,
-            price: tt.price,
-            quantity: tt.quantity,
-            remainingQuantity: tt.quantity,
-          }))
+      const eventInsert = db
+        .insert(events)
+        .values({
+          id: eventId,
+          organizerId: access.user.id,
+          categoryId: body.categoryId,
+          venueId,
+          title: body.title,
+          slug,
+          description: body.description ?? null,
+          bannerUrl: body.bannerUrl ?? null,
+          language: body.language ?? null,
+          duration: body.duration ?? null,
+          ageRestriction: body.ageRestriction ?? null,
+          status: "PUBLISHED",
+        })
+        .returning({ id: events.id })
+
+      const showInsert = db
+        .insert(shows)
+        .values(
+          body.shows.map((show, index) => {
+            const start = new Date(show.startTime)
+            return {
+              id: showIds[index],
+              eventId,
+              seatLayoutId: null,
+              showDate: start,
+              startTime: start,
+              endTime: show.endTime ? new Date(show.endTime) : null,
+              totalSeats: show.totalSeats,
+              availableSeats: show.totalSeats,
+            }
+          })
         )
-      )
-      .returning({ id: ticketTypes.id })
+        .returning({ id: shows.id })
 
-    await db.batch([venueInsert, eventInsert, showInsert, ticketInsert])
+      const ticketInsert = db
+        .insert(ticketTypes)
+        .values(
+          body.shows.flatMap((show, showIndex) =>
+            show.ticketTypes.map((tt) => ({
+              id: randomUUID(),
+              showId: showIds[showIndex],
+              name: tt.name,
+              description: null,
+              seatCategory: tt.seatCategory ?? null,
+              price: tt.price,
+              quantity: tt.quantity,
+              remainingQuantity: tt.quantity,
+            }))
+          )
+        )
+        .returning({ id: ticketTypes.id })
+
+      await db.batch([venueInsert, eventInsert, showInsert, ticketInsert])
+    }
+
+    // When the venue carries a seat layout, materialize per-show seat
+    // availability and snap the show capacity to the layout geometry.
+    if (seatLayoutId) {
+      for (let i = 0; i < body.shows.length; i += 1) {
+        const show = body.shows[i]
+        const ticketsForSeats = show.ticketTypes.map((tt) => ({
+          id: "",
+          category: tt.seatCategory ?? null,
+          price: tt.price,
+        }))
+
+        // find the ticket type ids created for this show
+        const createdTickets = await db
+          .select({ id: ticketTypes.id, seatCategory: ticketTypes.seatCategory })
+          .from(ticketTypes)
+          .where(eq(ticketTypes.showId, showIds[i]))
+        const ticketIdByCategory = new Map(
+          createdTickets
+            .filter((t) => t.seatCategory)
+            .map((t) => [t.seatCategory as string, t.id])
+        )
+        ticketsForSeats.forEach((tt) => {
+          if (tt.category) tt.id = ticketIdByCategory.get(tt.category) ?? ""
+        })
+
+        const materialized = await materializeShowSeats(
+          showIds[i],
+          seatLayoutId,
+          ticketsForSeats.map((tt) => ({ id: tt.id, category: tt.category, price: tt.price }))
+        )
+
+        if (materialized.materialized > 0) {
+          await db
+            .update(shows)
+            .set({
+              seatLayoutId,
+              totalSeats: materialized.capacity,
+              availableSeats: materialized.capacity,
+            })
+            .where(eq(shows.id, showIds[i]))
+        } else {
+          await db
+            .update(shows)
+            .set({ seatLayoutId })
+            .where(eq(shows.id, showIds[i]))
+        }
+      }
+    }
 
     return NextResponse.json(
       { success: true, slug, eventId, message: "Event created and published successfully" },

@@ -17,6 +17,7 @@ import {
 import Navbar from "@/components/Navbar"
 import { Button } from "@/components/ui/button"
 import { SignInButton } from "@clerk/nextjs"
+import SeatMap, { type SeatBookingConfirmation } from "@/components/SeatMap"
 import { formatDateTime, formatPrice } from "@/lib/format"
 
 type TicketType = {
@@ -35,6 +36,7 @@ type Show = {
   totalSeats: number
   availableSeats: number
   status: string
+  layoutType: string | null
   occupiedSeats: string[]
   ticketTypes: TicketType[]
 }
@@ -85,6 +87,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
   const [isBooking, setIsBooking] = useState(false)
   const [bookingError, setBookingError] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<BookingConfirmation | null>(null)
+  const [seatBooking, setSeatBooking] = useState<SeatBookingConfirmation | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -118,11 +121,15 @@ export default function EventDetailPage({ slug }: { slug: string }) {
 
   const selectedShow = shows.find((s) => s.id === selectedShowId) ?? null
   const selectedTicket = selectedShow?.ticketTypes.find((t) => t.id === selectedTicketId) ?? null
+  const isSeatShow =
+    selectedShow?.layoutType === "SEAT_SELECTION" ||
+    selectedShow?.layoutType === "SECTION_BASED"
 
   const selectShow = (showId: string) => {
     setSelectedShowId(showId)
     setSelectedTicketId(null)
     setSelectedSeat(null)
+    setSeatBooking(null)
   }
 
   const seats = useMemo(() => {
@@ -246,6 +253,61 @@ export default function EventDetailPage({ slug }: { slug: string }) {
     )
   }
 
+  if (seatBooking) {
+    return (
+      <div className="min-h-screen bg-[#090a0f] text-white">
+        <Navbar />
+        <div className="mx-auto flex max-w-lg flex-col items-center gap-4 px-4 py-16 text-center">
+          <div className="flex size-16 items-center justify-center rounded-full bg-emerald-500/15 ring-8 ring-emerald-500/10">
+            <CheckCircle2 className="size-8 text-emerald-400" />
+          </div>
+          <h1 className="text-xl font-black">Booking confirmed!</h1>
+          <p className="text-sm text-slate-400">
+            Your seats are locked in. Show this ticket at the venue entrance.
+          </p>
+
+          <div className="w-full space-y-3 rounded-2xl border border-white/10 bg-[#16161d] p-6 text-left ring-1 ring-white/5">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">Event</p>
+              <p className="text-sm font-bold">{seatBooking.eventTitle ?? event.title}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-3 border-t border-white/10 pt-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Booking no.</p>
+                <p className="font-mono text-xs font-bold text-pink-300">{seatBooking.bookingNumber}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Seats</p>
+                <p className="text-xs font-semibold">{seatBooking.seats.join(", ")}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Ticket type</p>
+                <p className="text-xs font-semibold">{seatBooking.ticketTypeName}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Tickets</p>
+                <p className="text-xs font-semibold">{seatBooking.ticketCount}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between border-t border-white/10 pt-3">
+              <span className="text-xs text-slate-400">Total paid</span>
+              <span className="text-base font-black text-pink-300">
+                {formatPrice(seatBooking.totalAmount)}
+              </span>
+            </div>
+          </div>
+
+          <Link
+            href="/events"
+            className="rounded-full bg-pink-500 px-5 py-2.5 text-xs font-bold text-white transition-colors hover:bg-pink-400"
+          >
+            Book another event
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-[#090a0f] text-white">
       <Navbar />
@@ -348,7 +410,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                       >
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-bold">
-                            {formatDateTime(show.showDate)}
+                            {formatDateTime(show.startTime)}
                           </span>
                           {show.availableSeats <= 20 && !disabled && (
                             <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
@@ -369,7 +431,14 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               )}
             </section>
 
-            {selectedShow && (
+            {selectedShow && isSeatShow && (
+              <section>
+                <h2 className="mb-3 text-base font-bold">2 · Select your seats</h2>
+                <SeatMap showId={selectedShow.id} onBooking={setSeatBooking} />
+              </section>
+            )}
+
+            {selectedShow && !isSeatShow && (
               <section>
                 <h2 className="mb-3 text-base font-bold">2 · Choose your ticket type</h2>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -406,7 +475,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               </section>
             )}
 
-            {selectedShow && selectedTicket && (
+            {selectedShow && selectedTicket && !isSeatShow && (
               <section>
                 <h2 className="mb-3 text-base font-bold">3 · Select your seat</h2>
                 <div className="rounded-2xl border border-white/10 bg-[#16161d] p-6">
@@ -462,7 +531,11 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                 Booking summary
               </h2>
 
-              {!selectedTicket || !selectedSeat || !selectedShow ? (
+              {isSeatShow ? (
+                <p className="rounded-xl bg-white/[0.04] px-4 py-3 text-xs text-slate-400">
+                  Select your seats on the map above, then hold & confirm your booking there.
+                </p>
+              ) : !selectedTicket || !selectedSeat || !selectedShow ? (
                 <p className="rounded-xl bg-white/[0.04] px-4 py-3 text-xs text-slate-400">
                   Select a show, ticket type and seat to see your total.
                 </p>
@@ -472,7 +545,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                     <div>
                       <p className="font-semibold">{event.title}</p>
                       <p className="text-[11px] text-slate-400">
-                        {formatDateTime(selectedShow.showDate)} · {selectedShow.ticketTypes.find((t) => t.id === selectedTicketId)?.name ?? selectedTicket.name}
+                        {formatDateTime(selectedShow.startTime)} · {selectedShow.ticketTypes.find((t) => t.id === selectedTicketId)?.name ?? selectedTicket.name}
                       </p>
                     </div>
                   </div>
@@ -508,7 +581,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                       Sign in to book
                     </Button>
                   </SignInButton>
-                ) : (
+                ) : !isSeatShow ? (
                   <Button
                     onClick={handleConfirm}
                     disabled={!selectedTicket || !selectedSeat || isBooking}
@@ -523,7 +596,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                       "Confirm booking"
                     )}
                   </Button>
-                )}
+                ) : null}
               </div>
 
               {!isLoaded && (

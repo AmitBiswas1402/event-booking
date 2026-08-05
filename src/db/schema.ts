@@ -7,6 +7,7 @@ import {
   boolean,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 // ==========================================================
@@ -41,6 +42,39 @@ export const paymentStatusEnum = pgEnum("payment_status", [
   "PAID",
   "FAILED",
   "REFUNDED",
+]);
+
+// ==========================================================
+// SEAT LAYOUT ENUMS
+// ==========================================================
+
+// How the venue models its audience area.
+// GENERAL_ADMISSION : quantity buckets only (festivals, standing)
+// SECTION_BASED     : discrete sections, seats optional
+// SEAT_SELECTION    : full row/seat geometry if the venue zone
+export const seatLayoutTypeEnum = pgEnum("seat_layout_type", [
+  "GENERAL_ADMISSION",
+  "SECTION_BASED",
+  "SEAT_SELECTION",
+]);
+
+// Lifecycle of a seat for a specific show.
+export const seatStatusEnum = pgEnum("seat_status", [
+  "AVAILABLE",
+  "HELD",
+  "BOOKED",
+  "BLOCKED",
+]);
+
+// Pricing / tier classification of a seat (drives the ticket type mapping).
+export const seatCategoryEnum = pgEnum("seat_category", [
+  "REGULAR",
+  "PREMIUM",
+  "RECLINER",
+  "VIP",
+  "GOLD",
+  "SILVER",
+  "WHEELCHAIR",
 ]);
 
 // ==========================================================
@@ -172,6 +206,285 @@ export const venues = pgTable(
 );
 
 // ==========================================================
+// SEAT TEMPLATES   (reusable layout blueprints)
+// ==========================================================
+// A template is a named, reusable recipe for a venue layout
+// (e.g. "Movie Hall", "Cricket Stadium"). It defines the
+// geometry (sections -> rows -> seats) that a venue CLONES
+// into its own per-venue seat layout.
+// ==========================================================
+
+export const seatTemplates = pgTable(
+  "seat_templates",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    name: text("name").notNull(),
+
+    description: text("description"),
+
+    type: seatLayoutTypeEnum("type").notNull(),
+
+    // System templates are shipped by us and reusable by any venue.
+    isSystem: boolean("is_system").default(false).notNull(),
+
+    // Only relevant for organizer-created templates; null for system ones.
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "cascade",
+    }),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("seat_templates_system_idx").on(table.isSystem),
+    index("seat_templates_type_idx").on(table.type),
+  ],
+);
+
+// A named area/block inside a template.
+// - SECTION_BASED  : "North Stand", "VIP Box" ...
+// - SEAT_SELECTION : "Premium Balcony", "Orchestra" ...
+// - GENERAL_ADMISSION : e.g. "VIP", "General" (no seats, only capacity)
+export const seatSections = pgTable(
+  "seat_sections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    seatTemplateId: uuid("seat_template_id")
+      .references(() => seatTemplates.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    name: text("name").notNull(),
+
+    description: text("description"),
+
+    sortOrder: integer("sort_order").default(0).notNull(),
+
+    // true => the section has numbered rows/seats.
+    // false => a pure capacity bucket (GA standing / section without seats).
+    hasSeats: boolean("has_seats").default(true).notNull(),
+
+    // Aggregated seat capacity for sections / GA buckets.
+    capacity: integer("capacity"),
+  },
+  (table) => [
+    index("seat_sections_template_idx").on(table.seatTemplateId),
+    index("seat_sections_capacity_idx").on(table.capacity),
+  ],
+);
+
+// A row of seats inside a section (SEAT_SELECTION only).
+export const seatRows = pgTable(
+  "seat_rows",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    seatTemplateId: uuid("seat_template_id")
+      .references(() => seatTemplates.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    sectionId: uuid("section_id")
+      .references(() => seatSections.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    label: text("label").notNull(), // "A", "B", "C" ...
+
+    seatCount: integer("seat_count").notNull(), // seats in this row
+
+    sortOrder: integer("sort_order").default(0).notNull(),
+
+    // Default tier for all seats in this row (override per seat below).
+    category: seatCategoryEnum("category").default("REGULAR").notNull(),
+  },
+  (table) => [
+    index("seat_rows_template_idx").on(table.seatTemplateId),
+    index("seat_rows_section_idx").on(table.sectionId),
+  ],
+);
+
+// An individual seat number within a row (SEAT_SELECTION only).
+export const seats = pgTable(
+  "seats",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    seatTemplateId: uuid("seat_template_id")
+      .references(() => seatTemplates.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    rowId: uuid("row_id")
+      .references(() => seatRows.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    seatNumber: integer("seat_number").notNull(), // 1..N within the row
+
+    category: seatCategoryEnum("category").default("REGULAR").notNull(),
+
+    isWheelchair: boolean("is_wheelchair").default(false).notNull(),
+
+    // Permanently non-sellable (broken / missing seat).
+    isBlocked: boolean("is_blocked").default(false).notNull(),
+
+    // Visual gap between sold blocks -> gives rows an aisle.
+    isAisle: boolean("is_aisle").default(false).notNull(),
+
+    sortOrder: integer("sort_order").default(0).notNull(),
+  },
+  (table) => [
+    index("seats_template_idx").on(table.seatTemplateId),
+    index("seats_row_idx").on(table.rowId),
+    uniqueIndex("seats_row_seat_uidx").on(table.rowId, table.seatNumber),
+  ],
+);
+
+// ==========================================================
+// VENUE SEAT LAYOUTS  (per-venue instance of a template)
+// ==========================================================
+// When an organizer attaches a template to a venue, the system
+// CLONES the template geometry here so every venue owns its own
+// copy and can tweak it without affecting the reusable template.
+// ==========================================================
+
+export const venueSeatLayouts = pgTable(
+  "venue_seat_layouts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    venueId: uuid("venue_id")
+      .references(() => venues.id, {
+        onDelete: "cascade",
+      })
+      .notNull()
+      .unique(),
+
+    sourceTemplateId: uuid("source_template_id")
+      .references(() => seatTemplates.id, {
+        onDelete: "restrict",
+      })
+      .notNull(),
+
+    type: seatLayoutTypeEnum("type").notNull(),
+
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("venue_seat_layouts_venue_idx").on(table.venueId)],
+);
+
+export const venueSeatSections = pgTable(
+  "venue_seat_sections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    seatLayoutId: uuid("seat_layout_id")
+      .references(() => venueSeatLayouts.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    name: text("name").notNull(),
+
+    description: text("description"),
+
+    sortOrder: integer("sort_order").default(0).notNull(),
+
+    hasSeats: boolean("has_seats").default(true).notNull(),
+
+    capacity: integer("capacity"),
+  },
+  (table) => [index("venue_seat_sections_layout_idx").on(table.seatLayoutId)],
+);
+
+export const venueSeatRows = pgTable(
+  "venue_seat_rows",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    seatLayoutId: uuid("seat_layout_id")
+      .references(() => venueSeatLayouts.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    sectionId: uuid("section_id")
+      .references(() => venueSeatSections.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    label: text("label").notNull(),
+
+    seatCount: integer("seat_count").notNull(),
+
+    sortOrder: integer("sort_order").default(0).notNull(),
+
+    category: seatCategoryEnum("category").default("REGULAR").notNull(),
+  },
+  (table) => [
+    index("venue_seat_rows_layout_idx").on(table.seatLayoutId),
+    index("venue_seat_rows_section_idx").on(table.sectionId),
+  ],
+);
+
+export const venueSeats = pgTable(
+  "venue_seats",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    seatLayoutId: uuid("seat_layout_id")
+      .references(() => venueSeatLayouts.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    rowId: uuid("row_id")
+      .references(() => venueSeatRows.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    seatNumber: integer("seat_number").notNull(),
+
+    category: seatCategoryEnum("category").default("REGULAR").notNull(),
+
+    isWheelchair: boolean("is_wheelchair").default(false).notNull(),
+
+    isBlocked: boolean("is_blocked").default(false).notNull(),
+
+    isAisle: boolean("is_aisle").default(false).notNull(),
+
+    sortOrder: integer("sort_order").default(0).notNull(),
+  },
+  (table) => [
+    index("venue_seats_layout_idx").on(table.seatLayoutId),
+    index("venue_seats_row_idx").on(table.rowId),
+  ],
+);
+
+// ==========================================================
 // EVENTS
 // ==========================================================
 
@@ -296,6 +609,13 @@ export const shows = pgTable(
       withTimezone: true,
     }),
 
+    // Which venue seat layout this show renders its seat map from.
+    // Alleen relevant for SECTION_BASED / SEAT_SELECTION shows.
+    seatLayoutId: uuid("seat_layout_id")
+      .references(() => venueSeatLayouts.id, {
+        onDelete: "restrict",
+      }),
+
     totalSeats: integer("total_seats").notNull(),
 
     availableSeats: integer("available_seats").notNull(),
@@ -321,6 +641,73 @@ export const shows = pgTable(
 );
 
 // ==========================================================
+// SHOW SEATS   (materialized per-show seat availability + holds)
+// ==========================================================
+// This is the source of truth for what the audience sees and
+// interacts with. One row per physical seat per show. The
+// status field drives AVAILABLE / HELD / BOOKED / BLOCKED and
+// heldUntil drives the booking countdown / seat lock expiry.
+// ==========================================================
+
+export const showSeats = pgTable(
+  "show_seats",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    showId: uuid("show_id")
+      .references(() => shows.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    venueSeatId: uuid("venue_seat_id")
+      .references(() => venueSeats.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+
+    label: text("label").notNull(), // e.g. "A18"
+
+    category: seatCategoryEnum("category").default("REGULAR").notNull(),
+
+    // Snapshot of the winning ticket price for this seat.
+    price: integer("price").notNull(),
+
+    // Maps the seat to a ticket type (name only, price snapshotted above).
+    ticketTypeId: uuid("ticket_type_id")
+      .references(() => ticketTypes.id, {
+        onDelete: "restrict",
+      }),
+
+    status: seatStatusEnum("status").default("AVAILABLE").notNull(),
+
+    // Whose session currently holds the seat (lock).
+    heldBy: uuid("held_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+
+    // When the hold expires -> countdown deadline on the client.
+    heldUntil: timestamp("held_until", { withTimezone: true }),
+
+    // Opaque token proving the caller owns the hold (prevents racing).
+    heldToken: text("held_token"),
+
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("show_seats_show_idx").on(table.showId),
+    index("show_seats_status_idx").on(table.status),
+    index("show_seats_held_until_idx").on(table.heldUntil),
+    uniqueIndex("show_seats_show_venue_uidx").on(table.showId, table.venueSeatId),
+    uniqueIndex("show_seats_token_uidx").on(table.heldToken),
+  ],
+);
+
+// ==========================================================
 // TICKET TYPES
 // ==========================================================
 
@@ -338,6 +725,10 @@ export const ticketTypes = pgTable(
     name: text("name").notNull(),
 
     description: text("description"),
+
+    // Optional: which seat category this ticket type maps to
+    // (used by SEAT_SELECTION shows to price individual seats).
+    seatCategory: seatCategoryEnum("seat_category"),
 
     price: integer("price").notNull(),
 

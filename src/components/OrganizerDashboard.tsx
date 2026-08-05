@@ -1,16 +1,19 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
+import Image from "next/image"
 import Link from "next/link"
 import {
   CalendarDays,
   CheckCircle2,
+  ImagePlus,
   Loader2,
   MapPin,
   Plus,
   Store,
   Ticket,
   Trash2,
+  UploadCloud,
   X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -82,8 +85,35 @@ export default function OrganizerDashboard({ categories, initialEvents }: Organi
   const [shows, setShows] = useState<ShowForm[]>([emptyShow()])
   const [events, setEvents] = useState<InitialEvent[]>(initialEvents)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isUploadingBanner, setIsUploadingBanner] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
+  const bannerInputRef = useRef<HTMLInputElement>(null)
+
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file) return
+
+    setErrorMsg(null)
+    setIsUploadingBanner(true)
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok) throw new Error(data?.error || "Image upload failed")
+      setBannerUrl(data.url)
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "Image upload failed.")
+    } finally {
+      setIsUploadingBanner(false)
+    }
+  }
+
 
   const updateShow = (showId: string, patch: Partial<ShowForm>) => {
     setShows((prev) => prev.map((s) => (s.id === showId ? { ...s, ...patch } : s)))
@@ -182,7 +212,7 @@ export default function OrganizerDashboard({ categories, initialEvents }: Organi
 
   const refreshEvents = async () => {
     try {
-      const res = await fetch("/api/events")
+      const res = await fetch("/api/events?organizer=me")
       if (res.ok) {
         const data = await res.json()
         setEvents(
@@ -287,13 +317,69 @@ export default function OrganizerDashboard({ categories, initialEvents }: Organi
                     ))}
                   </select>
                 </Field>
-                <Field label="Banner image URL">
-                  <Input
-                    value={bannerUrl}
-                    onChange={(e) => setBannerUrl(e.target.value)}
-                    placeholder="https://..."
-                    className="h-9 bg-white/5 text-sm"
+                <Field label="Banner image">
+                  <input
+                    ref={bannerInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+                    className="hidden"
+                    onChange={handleBannerUpload}
                   />
+                  {bannerUrl ? (
+                    <div className="flex items-center gap-3">
+                      <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-white/5">
+                        <Image
+                          src={bannerUrl}
+                          alt="Banner preview"
+                          fill
+                          sizes="112px"
+                          className="object-cover"
+                          unoptimized
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <p className="truncate text-xs text-slate-400">{bannerUrl}</p>
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="text-xs"
+                            onClick={() => bannerInputRef.current?.click()}
+                          >
+                            <ImagePlus className="size-3.5" />
+                            Change
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs text-rose-400 hover:text-rose-300"
+                            onClick={() => setBannerUrl("")}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => bannerInputRef.current?.click()}
+                      disabled={isUploadingBanner}
+                      className="flex h-16 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-white/20 bg-white/5 text-sm text-slate-300 transition-colors hover:border-pink-400/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isUploadingBanner ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <UploadCloud className="size-4" />
+                      )}
+                      {isUploadingBanner ? "Uploading..." : "Upload banner image"}
+                    </button>
+                  )}
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    JPG, PNG, WEBP, GIF or AVIF. Max 10MB.
+                  </p>
                 </Field>
                 <Field label="Language">
                   <Input

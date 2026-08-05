@@ -1,4 +1,5 @@
 import Link from "next/link"
+import Image from "next/image"
 import {
   CalendarDays,
   LayoutDashboard,
@@ -134,8 +135,20 @@ export default async function AdminPage() {
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-orange-500 text-[11px] font-black text-white">
-                            {(organizer.firstName?.[0] ?? organizer.email[0] ?? "?").toUpperCase()}
+                          <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full">
+                            {organizer.imageUrl ? (
+                              <Image
+                                src={organizer.imageUrl}
+                                alt={organizer.firstName || organizer.email}
+                                width={32}
+                                height={32}
+                                className="size-full object-cover"
+                              />
+                            ) : (
+                              <div className="flex size-full items-center justify-center bg-gradient-to-br from-amber-400 to-orange-500 text-[11px] font-black text-white">
+                                {(organizer.firstName?.[0] ?? organizer.email[0] ?? "?").toUpperCase()}
+                              </div>
+                            )}
                           </div>
                           <div>
                             <p className="font-semibold">

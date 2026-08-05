@@ -10,6 +10,7 @@ import {
   venues,
 } from "@/db/schema"
 import { requireRole } from "@/lib/authorization"
+import { consumeHeldSeats } from "@/lib/seatLock"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -101,8 +102,10 @@ export async function GET() {
 
 type BookingInput = {
   showId: string
-  ticketTypeId: string
-  seatNumber: string
+  ticketTypeId?: string
+  seatNumber?: string
+  seatIds?: string[]
+  token?: string
 }
 
 export async function POST(req: Request) {
@@ -117,11 +120,11 @@ export async function POST(req: Request) {
 
     const body = (await req.json()) as BookingInput
 
-    if (!body.showId || !body.ticketTypeId || !body.seatNumber?.trim()) {
-      return NextResponse.json(
-        { error: "Show, ticket type and seat number are required" },
-        { status: 400 }
-      )
+    if (!body.showId) {
+      return NextResponse.json({ error: "Show is required" }, { status: 400 })
+    }
+    if (body.seatIds && body.seatIds.length > 0 && !body.ticketTypeId) {
+      return NextResponse.json({ error: "A ticket type is required for these seats" }, { status: 400 })
     }
 
     const [show] = await db.select().from(shows).where(eq(shows.id, body.showId)).limit(1)
@@ -133,16 +136,101 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "This show is sold out" }, { status: 400 })
     }
 
-    const [ticketType] = await db
-      .select()
-      .from(ticketTypes)
-      .where(eq(ticketTypes.id, body.ticketTypeId))
-      .limit(1)
-    if (!ticketType || ticketType.showId !== show.id) {
+    const [ticketType] = body.ticketTypeId
+      ? await db
+          .select()
+          .from(ticketTypes)
+          .where(eq(ticketTypes.id, body.ticketTypeId))
+          .limit(1)
+      : [null]
+    if (body.ticketTypeId && (!ticketType || ticketType.showId !== show.id)) {
       return NextResponse.json({ error: "Invalid ticket type for this show" }, { status: 400 })
     }
-    if (ticketType.remainingQuantity <= 0) {
+    if (ticketType && ticketType.remainingQuantity <= 0) {
       return NextResponse.json({ error: "This ticket type is sold out" }, { status: 400 })
+    }
+
+    const hasHeldSeats = Array.isArray(body.seatIds) && body.seatIds.length > 0
+    if (hasHeldSeats) {
+      // ---------------- SEAT-SELECTION flow (contents of HELD seats) ----------------
+      const heldSeats = await consumeHeldSeats(show.id, access.user.id, body.seatIds!, body.token)
+      if (heldSeats.length === 0) {
+        return NextResponse.json(
+          { error: "The selected seats are no longer held for you. Please reselect them." },
+          { status: 409 }
+        )
+      }
+
+      const subtotal = heldSeats.reduce((sum, s) => sum + s.price, 0)
+      const taxAmount = Math.round(subtotal * 0.18)
+      const totalAmount = subtotal + taxAmount
+      const bookingId = crypto.randomUUID()
+      const bookingNumber = `BK-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`
+
+      const bookingInsert = db
+        .insert(bookings)
+        .values({
+          id: bookingId,
+          bookingNumber,
+          audienceId: access.user.id,
+          showId: show.id,
+          bookingStatus: "CONFIRMED",
+          paymentStatus: "PAID",
+          subtotal,
+          discountAmount: 0,
+          taxAmount,
+          totalAmount,
+        })
+        .returning({ id: bookings.id })
+
+      const ticketInserts = heldSeats.map((seat) =>
+        db
+          .insert(bookingTickets)
+          .values({
+            id: crypto.randomUUID(),
+            bookingId,
+            ticketTypeId: ticketType!.id,
+            ticketTypeName: ticketType!.name,
+            unitPrice: seat.price,
+            ticketNumber: `TKT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+            seatNumber: seat.label,
+            attendeeName: null,
+          })
+          .returning({ id: bookingTickets.id })
+      )
+
+      const decrementSeats = db
+        .update(shows)
+        .set({ availableSeats: sql`${shows.availableSeats} - ${heldSeats.length}` })
+        .where(eq(shows.id, show.id))
+
+      await db.batch([bookingInsert, ...ticketInserts, decrementSeats])
+
+      return NextResponse.json(
+        {
+          success: true,
+          booking: {
+            id: bookingId,
+            bookingNumber,
+            seats: heldSeats.map((s) => s.label),
+            ticketCount: heldSeats.length,
+            ticketTypeName: ticketType!.name,
+            eventTitle: await getEventTitle(show.id),
+            subtotal,
+            taxAmount,
+            totalAmount,
+          },
+        },
+        { status: 201 }
+      )
+    }
+
+    // ---------------- General Admission / single numeric seat flow ----------------
+    if (!body.ticketTypeId || !body.seatNumber?.trim()) {
+      return NextResponse.json(
+        { error: "Ticket type and seat number are required" },
+        { status: 400 }
+      )
     }
 
     const seatNum = body.seatNumber.trim()
@@ -167,7 +255,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `Seat ${seatNum} is already taken for this show` }, { status: 409 })
     }
 
-    const subtotal = ticketType.price
+    const subtotal = ticketType!.price
     const taxAmount = Math.round(subtotal * 0.18)
     const totalAmount = subtotal + taxAmount
     const bookingId = crypto.randomUUID()
@@ -196,9 +284,9 @@ export async function POST(req: Request) {
       .values({
         id: ticketId,
         bookingId,
-        ticketTypeId: ticketType.id,
-        ticketTypeName: ticketType.name,
-        unitPrice: ticketType.price,
+        ticketTypeId: ticketType!.id,
+        ticketTypeName: ticketType!.name,
+        unitPrice: ticketType!.price,
         ticketNumber,
         seatNumber: seatNum,
         attendeeName: null,
@@ -213,7 +301,7 @@ export async function POST(req: Request) {
     const decrementQuantity = db
       .update(ticketTypes)
       .set({ remainingQuantity: sql`${ticketTypes.remainingQuantity} - 1` })
-      .where(eq(ticketTypes.id, ticketType.id))
+      .where(eq(ticketTypes.id, ticketType!.id))
 
     await db.batch([bookingInsert, ticketInsert, decrementSeats, decrementQuantity])
 
@@ -225,7 +313,7 @@ export async function POST(req: Request) {
           bookingNumber,
           seatNumber: seatNum,
           ticketNumber,
-          ticketTypeName: ticketType.name,
+          ticketTypeName: ticketType!.name,
           eventTitle: (await getEventTitle(show.id)),
           subtotal,
           taxAmount,

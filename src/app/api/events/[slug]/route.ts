@@ -8,6 +8,7 @@ import {
   events,
   shows,
   ticketTypes,
+  venueSeatLayouts,
   venues,
 } from "@/db/schema"
 
@@ -46,12 +47,16 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
     }
 
     const showList = await db
-      .select()
+      .select({
+        show: shows,
+        layoutType: venueSeatLayouts.type,
+      })
       .from(shows)
+      .leftJoin(venueSeatLayouts, eq(venueSeatLayouts.id, shows.seatLayoutId))
       .where(eq(shows.eventId, row.event.id))
       .orderBy(asc(shows.showDate))
 
-    const showIds = showList.map((s) => s.id)
+    const showIds = showList.map((s) => s.show.id)
     const allTicketTypes = showIds.length
       ? await db.select().from(ticketTypes).where(inArray(ticketTypes.showId, showIds))
       : []
@@ -86,7 +91,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
         category: row.category.name,
         venue: row.venue,
       },
-      shows: showList.map((show) => ({
+      shows: showList.map(({ show, layoutType }) => ({
         id: show.id,
         showDate: show.showDate,
         startTime: show.startTime,
@@ -94,6 +99,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
         totalSeats: show.totalSeats,
         availableSeats: show.availableSeats,
         status: show.status,
+        layoutType: layoutType ?? null,
         occupiedSeats: occupied.get(show.id) ?? [],
         ticketTypes: allTicketTypes
           .filter((t) => t.showId === show.id)
