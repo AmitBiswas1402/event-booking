@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { and, desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { db } from "@/lib"
 import {
   bookingTickets,
@@ -104,6 +104,7 @@ type BookingInput = {
   showId: string
   ticketTypeId?: string
   seatNumber?: string
+  seatNumbers?: string[]
   seatIds?: string[]
   token?: string
 }
@@ -225,43 +226,50 @@ export async function POST(req: Request) {
       )
     }
 
-    // ---------------- General Admission / single numeric seat flow ----------------
-    if (!body.ticketTypeId || !body.seatNumber?.trim()) {
+    // ---------------- General Admission / numeric seat flow (single or multiple) ----------------
+    const requestedSeats: string[] = Array.isArray(body.seatNumbers) && body.seatNumbers.length > 0
+      ? body.seatNumbers.map((s: string) => String(s).trim())
+      : body.seatNumber?.trim()
+        ? [body.seatNumber.trim()]
+        : []
+
+    if (!body.ticketTypeId || requestedSeats.length === 0) {
       return NextResponse.json(
-        { error: "Ticket type and seat number are required" },
+        { error: "Ticket type and seat number(s) are required" },
         { status: 400 }
       )
     }
 
-    const seatNum = body.seatNumber.trim()
-    const seatIndex = Number(seatNum)
-    if (!Number.isInteger(seatIndex) || seatIndex < 1 || seatIndex > show.totalSeats) {
-      return NextResponse.json({ error: `Seat must be a number between 1 and ${show.totalSeats}` }, { status: 400 })
+    for (const seatNum of requestedSeats) {
+      const seatIndex = Number(seatNum)
+      if (!Number.isInteger(seatIndex) || seatIndex < 1 || seatIndex > show.totalSeats) {
+        return NextResponse.json({ error: `Seat ${seatNum} must be a number between 1 and ${show.totalSeats}` }, { status: 400 })
+      }
     }
 
-    const [existingSeat] = await db
-      .select({ id: bookingTickets.id })
+    const takenSeats = await db
+      .select({ seatNumber: bookingTickets.seatNumber })
       .from(bookingTickets)
       .innerJoin(bookings, eq(bookingTickets.bookingId, bookings.id))
       .where(
         and(
           eq(bookings.showId, show.id),
-          eq(bookingTickets.seatNumber, seatNum),
+          inArray(bookingTickets.seatNumber, requestedSeats),
           sql`${bookings.bookingStatus} != 'CANCELLED'`
         )
       )
-      .limit(1)
-    if (existingSeat) {
-      return NextResponse.json({ error: `Seat ${seatNum} is already taken for this show` }, { status: 409 })
+    if (takenSeats.length > 0) {
+      const takenList = takenSeats.map((t) => t.seatNumber).join(", ")
+      return NextResponse.json({ error: `Seat(s) ${takenList} are already taken for this show` }, { status: 409 })
     }
 
-    const subtotal = ticketType!.price
+    const count = requestedSeats.length
+    const unitPrice = ticketType!.price
+    const subtotal = unitPrice * count
     const taxAmount = Math.round(subtotal * 0.18)
     const totalAmount = subtotal + taxAmount
     const bookingId = crypto.randomUUID()
-    const ticketId = crypto.randomUUID()
     const bookingNumber = `BK-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`
-    const ticketNumber = `TKT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`
 
     const bookingInsert = db
       .insert(bookings)
@@ -279,31 +287,33 @@ export async function POST(req: Request) {
       })
       .returning({ id: bookings.id })
 
-    const ticketInsert = db
-      .insert(bookingTickets)
-      .values({
-        id: ticketId,
-        bookingId,
-        ticketTypeId: ticketType!.id,
-        ticketTypeName: ticketType!.name,
-        unitPrice: ticketType!.price,
-        ticketNumber,
-        seatNumber: seatNum,
-        attendeeName: null,
-      })
-      .returning({ id: bookingTickets.id })
+    const ticketInserts = requestedSeats.map((seatNum: string) =>
+      db
+        .insert(bookingTickets)
+        .values({
+          id: crypto.randomUUID(),
+          bookingId,
+          ticketTypeId: ticketType!.id,
+          ticketTypeName: ticketType!.name,
+          unitPrice,
+          ticketNumber: `TKT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+          seatNumber: seatNum,
+          attendeeName: null,
+        })
+        .returning({ id: bookingTickets.id })
+    )
 
     const decrementSeats = db
       .update(shows)
-      .set({ availableSeats: sql`${shows.availableSeats} - 1` })
+      .set({ availableSeats: sql`${shows.availableSeats} - ${count}` })
       .where(eq(shows.id, show.id))
 
     const decrementQuantity = db
       .update(ticketTypes)
-      .set({ remainingQuantity: sql`${ticketTypes.remainingQuantity} - 1` })
+      .set({ remainingQuantity: sql`${ticketTypes.remainingQuantity} - ${count}` })
       .where(eq(ticketTypes.id, ticketType!.id))
 
-    await db.batch([bookingInsert, ticketInsert, decrementSeats, decrementQuantity])
+    await db.batch([bookingInsert, ...ticketInserts, decrementSeats, decrementQuantity])
 
     return NextResponse.json(
       {
@@ -311,8 +321,8 @@ export async function POST(req: Request) {
         booking: {
           id: bookingId,
           bookingNumber,
-          seatNumber: seatNum,
-          ticketNumber,
+          seatNumber: requestedSeats.join(", "),
+          ticketNumber: `TKT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
           ticketTypeName: ticketType!.name,
           eventTitle: (await getEventTitle(show.id)),
           subtotal,

@@ -169,6 +169,9 @@ export const venues = pgTable(
 
     imageUrl: text("image_url"),
 
+    // URL of the venue seating layout diagram uploaded by the organizer.
+    layoutImageUrl: text("layout_image_url"),
+
     address: text("address").notNull(),
 
     city: text("city").notNull(),

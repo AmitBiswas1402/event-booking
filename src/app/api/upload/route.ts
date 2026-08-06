@@ -33,11 +33,46 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const contentType = req.headers.get("content-type") || "";
+
+    // Handle JSON body for URL upload
+    if (contentType.includes("application/json")) {
+      const body = await req.json().catch(() => ({}));
+      const imageUrl = body.url;
+      if (!imageUrl || typeof imageUrl !== "string") {
+        return NextResponse.json({ error: "No image URL provided" }, { status: 400 });
+      }
+
+      const result = await cloudinary.uploader.upload(imageUrl, {
+        folder: "events",
+        resource_type: "image",
+      });
+
+      return NextResponse.json({
+        url: result.secure_url,
+        publicId: result.public_id,
+      });
+    }
+
+    // Handle FormData (file or url field)
     const formData = await req.formData();
     const file = formData.get("file");
+    const urlParam = formData.get("url");
+
+    if (typeof urlParam === "string" && urlParam.trim()) {
+      const result = await cloudinary.uploader.upload(urlParam.trim(), {
+        folder: "events",
+        resource_type: "image",
+      });
+
+      return NextResponse.json({
+        url: result.secure_url,
+        publicId: result.public_id,
+      });
+    }
 
     if (!(file instanceof File)) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+      return NextResponse.json({ error: "No file or URL provided" }, { status: 400 });
     }
 
     if (!ALLOWED_TYPES.has(file.type)) {
@@ -81,7 +116,7 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json(
-      { error: "Upload failed" },
+      { error: error instanceof Error ? error.message : "Upload failed" },
       { status: 500 }
     );
   }

@@ -9,15 +9,20 @@ import {
   CalendarDays,
   CheckCircle2,
   Clock,
+  LayoutTemplate,
   Loader2,
   MapPin,
+  Maximize2,
   Signpost,
   Ticket,
+  Users,
 } from "lucide-react"
 import Navbar from "@/components/Navbar"
 import { Button } from "@/components/ui/button"
 import { SignInButton } from "@clerk/nextjs"
 import SeatMap, { type SeatBookingConfirmation } from "@/components/SeatMap"
+import TicketQuantityModal from "@/components/TicketQuantityModal"
+import LayoutLightboxModal from "@/components/LayoutLightboxModal"
 import { formatDateTime, formatPrice } from "@/lib/format"
 
 type TicketType = {
@@ -59,6 +64,7 @@ type EventDetail = {
     country: string
     postalCode: string | null
     capacity: number | null
+    layoutImageUrl?: string | null
   }
 }
 
@@ -83,7 +89,10 @@ export default function EventDetailPage({ slug }: { slug: string }) {
 
   const [selectedShowId, setSelectedShowId] = useState<string | null>(null)
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null)
-  const [selectedSeat, setSelectedSeat] = useState<string | null>(null)
+  const [ticketCount, setTicketCount] = useState<number>(2)
+  const [isQuantityModalOpen, setIsQuantityModalOpen] = useState(false)
+  const [isLayoutLightboxOpen, setIsLayoutLightboxOpen] = useState(false)
+  const [selectedSeats, setSelectedSeats] = useState<string[]>([])
   const [isBooking, setIsBooking] = useState(false)
   const [bookingError, setBookingError] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<BookingConfirmation | null>(null)
@@ -128,8 +137,28 @@ export default function EventDetailPage({ slug }: { slug: string }) {
   const selectShow = (showId: string) => {
     setSelectedShowId(showId)
     setSelectedTicketId(null)
-    setSelectedSeat(null)
+    setSelectedSeats([])
     setSeatBooking(null)
+    setIsQuantityModalOpen(true)
+  }
+
+  const selectTicket = (ticketId: string) => {
+    setSelectedTicketId(ticketId)
+    setSelectedSeats([])
+  }
+
+  const toggleSeat = (seat: string) => {
+    if (occupiedSet.has(seat)) return
+    setSelectedSeats((prev) => {
+      if (prev.includes(seat)) {
+        return prev.filter((s) => s !== seat)
+      }
+      if (prev.length < ticketCount) {
+        return [...prev, seat]
+      }
+      // Replace oldest selection if maximum reached
+      return [...prev.slice(1), seat]
+    })
   }
 
   const seats = useMemo(() => {
@@ -142,11 +171,12 @@ export default function EventDetailPage({ slug }: { slug: string }) {
     [selectedShow]
   )
 
-  const taxAmount = selectedTicket ? Math.round(selectedTicket.price * 0.18) : 0
-  const totalAmount = selectedTicket ? selectedTicket.price + taxAmount : 0
+  const subtotal = selectedTicket ? selectedTicket.price * ticketCount : 0
+  const taxAmount = selectedTicket ? Math.round(subtotal * 0.18) : 0
+  const totalAmount = subtotal + taxAmount
 
   const handleConfirm = async () => {
-    if (!selectedShowId || !selectedTicketId || !selectedSeat) return
+    if (!selectedShowId || !selectedTicketId || selectedSeats.length === 0) return
     setBookingError(null)
     setIsBooking(true)
     try {
@@ -156,7 +186,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
         body: JSON.stringify({
           showId: selectedShowId,
           ticketTypeId: selectedTicketId,
-          seatNumber: selectedSeat,
+          seatNumbers: selectedSeats,
         }),
       })
       const data = await res.json().catch(() => null)
@@ -208,7 +238,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
           </div>
           <h1 className="text-xl font-black">Booking confirmed!</h1>
           <p className="text-sm text-slate-400">
-            Your seat is locked in. Show this ticket at the venue entrance.
+            Your seats are locked in. Show this ticket at the venue entrance.
           </p>
 
           <div className="w-full space-y-3 rounded-2xl border border-white/10 bg-[#16161d] p-6 text-left ring-1 ring-white/5">
@@ -230,7 +260,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                 <p className="text-xs font-semibold">{confirmation.ticketTypeName}</p>
               </div>
               <div>
-                <p className="text-[10px] uppercase tracking-wider text-slate-500">Seat</p>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Seats</p>
                 <p className="text-xs font-semibold">{confirmation.seatNumber}</p>
               </div>
             </div>
@@ -323,6 +353,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
 
         <div className="grid gap-8 lg:grid-cols-[1fr_380px]">
           <div className="space-y-6">
+            {/* Event Header Banner */}
             <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#16161d]">
               <div className="relative h-64 w-full md:h-80">
                 {event.bannerUrl ? (
@@ -383,8 +414,66 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               )}
             </section>
 
+            {/* ── Venue Seating Map Picture (Uploaded by Organizer) ── */}
+            {event.venue.layoutImageUrl && (
+              <section className="overflow-hidden rounded-2xl border border-violet-500/25 bg-[#141622] p-5 shadow-lg ring-1 ring-violet-500/10">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <LayoutTemplate className="size-4 text-violet-400" />
+                    <h3 className="text-sm font-bold text-white">Venue Seating Layout Map</h3>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsLayoutLightboxOpen(true)}
+                    className="h-8 gap-1.5 border-violet-500/30 bg-violet-500/10 text-xs font-semibold text-violet-300 hover:bg-violet-500/20"
+                  >
+                    <Maximize2 className="size-3.5" /> Zoom Layout
+                  </Button>
+                </div>
+                <p className="mb-3 text-xs text-slate-400">
+                  Inspect the organizer&apos;s seating plan below to see section locations (VIP, Gold, Silver, Stage) before picking your seats.
+                </p>
+                <div
+                  onClick={() => setIsLayoutLightboxOpen(true)}
+                  className="group relative cursor-pointer overflow-hidden rounded-xl border border-violet-500/25 bg-black/40 transition-all hover:border-violet-400/50 hover:shadow-xl"
+                >
+                  <div className="relative w-full" style={{ paddingTop: "45%" }}>
+                    <Image
+                      src={event.venue.layoutImageUrl}
+                      alt="Venue seating layout map"
+                      fill
+                      sizes="(max-width: 1024px) 100vw, 60vw"
+                      className="object-contain p-2"
+                      unoptimized
+                    />
+                  </div>
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/35 group-hover:opacity-100">
+                    <span className="flex items-center gap-1.5 rounded-full bg-violet-900/90 px-4 py-2 text-xs font-bold text-white shadow-lg backdrop-blur-sm">
+                      <Maximize2 className="size-3.5" /> Click to Zoom Layout
+                    </span>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* Step 1: Choose a show */}
             <section>
-              <h2 className="mb-3 text-base font-bold">1 · Choose a show</h2>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-base font-bold">1 · Choose a show</h2>
+                {selectedShow && (
+                  <button
+                    type="button"
+                    onClick={() => setIsQuantityModalOpen(true)}
+                    className="flex items-center gap-1.5 rounded-full border border-pink-500/30 bg-pink-500/10 px-3 py-1 text-xs font-bold text-pink-300 hover:bg-pink-500/20"
+                  >
+                    <Users className="size-3.5" />
+                    {ticketCount} {ticketCount === 1 ? "Ticket" : "Tickets"} (Change)
+                  </button>
+                )}
+              </div>
+
               {shows.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/15 bg-[#16161d] p-8 text-center text-sm text-slate-400">
                   No shows scheduled yet.
@@ -431,13 +520,24 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               )}
             </section>
 
+            {/* Step 2 (SeatMap view): Select your seats */}
             {selectedShow && isSeatShow && (
               <section>
-                <h2 className="mb-3 text-base font-bold">2 · Select your seats</h2>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-base font-bold">2 · Select your seats</h2>
+                  <button
+                    type="button"
+                    onClick={() => setIsQuantityModalOpen(true)}
+                    className="flex items-center gap-1 text-xs font-semibold text-pink-300 hover:underline"
+                  >
+                    <Users className="size-3.5" /> {ticketCount} Tickets
+                  </button>
+                </div>
                 <SeatMap showId={selectedShow.id} onBooking={setSeatBooking} />
               </section>
             )}
 
+            {/* Step 2 (Numeric view): Choose your ticket type */}
             {selectedShow && !isSeatShow && (
               <section>
                 <h2 className="mb-3 text-base font-bold">2 · Choose your ticket type</h2>
@@ -450,7 +550,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                         key={ticket.id}
                         type="button"
                         disabled={soldOut}
-                        onClick={() => setSelectedTicketId(ticket.id)}
+                        onClick={() => selectTicket(ticket.id)}
                         className={`flex items-center justify-between rounded-xl border p-4 text-left transition-all ${
                           soldOut
                             ? "cursor-not-allowed border-white/5 bg-white/[0.02] opacity-50"
@@ -475,31 +575,39 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               </section>
             )}
 
+            {/* Step 3: Select your seats */}
             {selectedShow && selectedTicket && !isSeatShow && (
               <section>
-                <h2 className="mb-3 text-base font-bold">3 · Select your seat</h2>
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-base font-bold">
+                    3 · Select your {ticketCount} {ticketCount === 1 ? "seat" : "seats"}
+                  </h2>
+                  <span className="rounded-full bg-pink-500/15 px-3 py-1 text-xs font-bold text-pink-300">
+                    {selectedSeats.length} of {ticketCount} selected
+                  </span>
+                </div>
                 <div className="rounded-2xl border border-white/10 bg-[#16161d] p-6">
                   <div className="mb-6 flex items-center justify-center">
                     <div className="w-3/4 rounded-t-2xl bg-white/10 py-2 text-center text-[10px] uppercase tracking-[0.3em] text-slate-400">
-                      Screen
+                      Screen / Stage Position
                     </div>
                   </div>
                   <div className="mx-auto grid max-w-lg grid-cols-8 gap-2">
                     {seats.map((seat) => {
                       const occupied = occupiedSet.has(seat)
-                      const isSelected = selectedSeat === seat
+                      const isSelected = selectedSeats.includes(seat)
                       return (
                         <button
                           key={seat}
                           type="button"
                           disabled={occupied}
-                          onClick={() => setSelectedSeat(seat)}
+                          onClick={() => toggleSeat(seat)}
                           aria-label={`Seat ${seat}`}
                           className={`flex aspect-square items-center justify-center rounded-md text-[9px] font-bold transition-all ${
                             occupied
                               ? "cursor-not-allowed bg-white/[0.04] text-slate-600"
                               : isSelected
-                                ? "bg-pink-500 text-white shadow-lg shadow-pink-950/40"
+                                ? "bg-pink-500 text-white shadow-lg shadow-pink-950/40 ring-2 ring-pink-300"
                                 : "bg-white/10 text-slate-300 hover:bg-pink-500/40 hover:text-white"
                           }`}
                         >
@@ -510,7 +618,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                   </div>
                   <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-[10px] text-slate-400">
                     <span className="flex items-center gap-1.5">
-                      <span className="size-3 rounded bg-pink-500" /> Selected
+                      <span className="size-3 rounded bg-pink-500" /> Selected ({selectedSeats.length}/{ticketCount})
                     </span>
                     <span className="flex items-center gap-1.5">
                       <span className="size-3 rounded bg-white/10" /> Available
@@ -524,6 +632,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
             )}
           </div>
 
+          {/* Right sidebar: Booking summary */}
           <aside className="lg:sticky lg:top-24 lg:self-start">
             <div className="rounded-2xl border border-white/10 bg-[#16161d] p-6 ring-1 ring-white/5">
               <h2 className="mb-4 flex items-center gap-2 text-base font-bold">
@@ -533,29 +642,45 @@ export default function EventDetailPage({ slug }: { slug: string }) {
 
               {isSeatShow ? (
                 <p className="rounded-xl bg-white/[0.04] px-4 py-3 text-xs text-slate-400">
-                  Select your seats on the map above, then hold & confirm your booking there.
+                  Select your seats on the map above, then hold &amp; confirm your booking there.
                 </p>
-              ) : !selectedTicket || !selectedSeat || !selectedShow ? (
-                <p className="rounded-xl bg-white/[0.04] px-4 py-3 text-xs text-slate-400">
-                  Select a show, ticket type and seat to see your total.
-                </p>
+              ) : !selectedTicket || selectedSeats.length === 0 || !selectedShow ? (
+                <div className="space-y-2 rounded-xl bg-white/[0.04] p-4 text-xs text-slate-400">
+                  <p>Select a show, ticket type and seat(s) to see your total.</p>
+                  {selectedTicket && (
+                    <div className="mt-2 flex items-center justify-between border-t border-white/10 pt-2 text-white">
+                      <span>{ticketCount} Ticket(s) selected</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsQuantityModalOpen(true)}
+                        className="text-xs text-pink-400 hover:underline"
+                      >
+                        Change ({ticketCount})
+                      </button>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="space-y-3 text-sm">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="font-semibold">{event.title}</p>
                       <p className="text-[11px] text-slate-400">
-                        {formatDateTime(selectedShow.startTime)} · {selectedShow.ticketTypes.find((t) => t.id === selectedTicketId)?.name ?? selectedTicket.name}
+                        {formatDateTime(selectedShow.startTime)} · {selectedTicket.name}
                       </p>
                     </div>
                   </div>
                   <div className="flex justify-between text-xs text-slate-300">
-                    <span>Seat</span>
-                    <span className="font-bold text-white">{selectedSeat}</span>
+                    <span>Quantity</span>
+                    <span className="font-bold text-white">{ticketCount} ticket(s)</span>
                   </div>
                   <div className="flex justify-between text-xs text-slate-300">
-                    <span>Ticket</span>
-                    <span>{formatPrice(selectedTicket.price)}</span>
+                    <span>Selected Seat(s)</span>
+                    <span className="font-bold text-pink-300">{selectedSeats.join(", ")}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-slate-300">
+                    <span>Ticket price ({ticketCount} × {formatPrice(selectedTicket.price)})</span>
+                    <span>{formatPrice(subtotal)}</span>
                   </div>
                   <div className="flex justify-between text-xs text-slate-300">
                     <span>Taxes (18%)</span>
@@ -584,7 +709,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                 ) : !isSeatShow ? (
                   <Button
                     onClick={handleConfirm}
-                    disabled={!selectedTicket || !selectedSeat || isBooking}
+                    disabled={!selectedTicket || selectedSeats.length === 0 || isBooking}
                     className="w-full bg-gradient-to-r from-pink-500 to-violet-600 py-3 text-xs font-bold text-white shadow-lg disabled:opacity-40"
                   >
                     {isBooking ? (
@@ -593,7 +718,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                         Confirming...
                       </span>
                     ) : (
-                      "Confirm booking"
+                      `Confirm booking for ${selectedSeats.length} seat(s)`
                     )}
                   </Button>
                 ) : null}
@@ -606,6 +731,27 @@ export default function EventDetailPage({ slug }: { slug: string }) {
           </aside>
         </div>
       </main>
+
+      {/* ── Ticket Quantity Popup Modal ── */}
+      <TicketQuantityModal
+        isOpen={isQuantityModalOpen}
+        onClose={() => setIsQuantityModalOpen(false)}
+        initialQuantity={ticketCount}
+        onSelectQuantity={(count) => {
+          setTicketCount(count)
+          setSelectedSeats([])
+        }}
+      />
+
+      {/* ── Venue Seating Layout Lightbox Modal ── */}
+      {event.venue.layoutImageUrl && (
+        <LayoutLightboxModal
+          isOpen={isLayoutLightboxOpen}
+          onClose={() => setIsLayoutLightboxOpen(false)}
+          imageUrl={event.venue.layoutImageUrl}
+          venueName={event.venue.name}
+        />
+      )}
     </div>
   )
 }

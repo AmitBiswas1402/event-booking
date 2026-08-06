@@ -54,6 +54,7 @@ type EventInput = {
   categoryId: string
   venueId?: string
   venue: VenueInput
+  venueLayoutImageUrl?: string
   shows: ShowInput[]
 }
 
@@ -92,6 +93,7 @@ export async function GET(req: Request) {
           city: venues.city,
           state: venues.state,
           address: venues.address,
+          layoutImageUrl: venues.layoutImageUrl,
         },
       })
       .from(events)
@@ -137,6 +139,8 @@ export async function GET(req: Request) {
         isFeatured: event.isFeatured,
         category: category.name,
         venue: venue.name,
+        venueId: venue.id,
+        venueLayoutImageUrl: venue.layoutImageUrl ?? null,
         venueCity: venue.city,
         venueState: venue.state,
         shows: (grouped.shows.get(event.id) ?? []).map((show) => ({
@@ -264,6 +268,7 @@ export async function POST(req: Request) {
           name: body.venue.name,
           slug: `${slugify(body.venue.name)}-${randomUUID().slice(0, 6)}`,
           description: body.venue.description ?? null,
+          layoutImageUrl: body.venueLayoutImageUrl ?? null,
           address: body.venue.address,
           city: body.venue.city,
           state: body.venue.state,

@@ -36,7 +36,7 @@ export default async function OrganizerPage() {
     db
       .select({
         event: events,
-        venue: { name: venues.name, city: venues.city },
+        venue: { id: venues.id, name: venues.name, city: venues.city, layoutImageUrl: venues.layoutImageUrl },
       })
       .from(events)
       .innerJoin(venues, eq(events.venueId, venues.id))
@@ -59,6 +59,8 @@ export default async function OrganizerPage() {
         status: event.status,
         description: event.description,
         venue: `${venue.name}, ${venue.city}`,
+        venueId: venue.id,
+        venueLayoutImageUrl: venue.layoutImageUrl ?? null,
         createdAt: event.createdAt,
         showCount: allShows.filter((s) => s.eventId === event.id).length,
       }))}
