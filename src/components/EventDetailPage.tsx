@@ -21,7 +21,9 @@ import Navbar from "@/components/Navbar"
 import { Button } from "@/components/ui/button"
 import { SignInButton } from "@clerk/nextjs"
 import SeatMap, { type SeatBookingConfirmation } from "@/components/SeatMap"
-import TicketQuantityModal from "@/components/TicketQuantityModal"
+import { getZoneTheme } from "@/components/SeatSectionGrid"
+import SeatSelectionModal from "@/components/SeatSelectionModal"
+import BookingSetupModal from "@/components/BookingSetupModal"
 import LayoutLightboxModal from "@/components/LayoutLightboxModal"
 import { formatDateTime, formatPrice } from "@/lib/format"
 
@@ -80,6 +82,15 @@ type BookingConfirmation = {
   totalAmount: number
 }
 
+// Zone color pill for the layout image overlay
+function ZonePill({ name, badge, emoji }: { name: string; badge: string; emoji: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${badge}`}>
+      {emoji} {name}
+    </span>
+  )
+}
+
 export default function EventDetailPage({ slug }: { slug: string }) {
   const { isLoaded, isSignedIn } = useUser()
   const [event, setEvent] = useState<EventDetail | null>(null)
@@ -90,8 +101,9 @@ export default function EventDetailPage({ slug }: { slug: string }) {
   const [selectedShowId, setSelectedShowId] = useState<string | null>(null)
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null)
   const [ticketCount, setTicketCount] = useState<number>(2)
-  const [isQuantityModalOpen, setIsQuantityModalOpen] = useState(false)
+  const [isSetupModalOpen, setIsSetupModalOpen] = useState(false)
   const [isLayoutLightboxOpen, setIsLayoutLightboxOpen] = useState(false)
+  const [isSeatModalOpen, setIsSeatModalOpen] = useState(false)
   const [selectedSeats, setSelectedSeats] = useState<string[]>([])
   const [isBooking, setIsBooking] = useState(false)
   const [bookingError, setBookingError] = useState<string | null>(null)
@@ -139,7 +151,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
     setSelectedTicketId(null)
     setSelectedSeats([])
     setSeatBooking(null)
-    setIsQuantityModalOpen(true)
+    setIsSetupModalOpen(true)
   }
 
   const selectTicket = (ticketId: string) => {
@@ -147,8 +159,20 @@ export default function EventDetailPage({ slug }: { slug: string }) {
     setSelectedSeats([])
   }
 
+  // Build per-ticket-type occupied seat sets from the show's occupiedSeats
+  // Occupied seats are labeled with the prefix e.g. "G1", "V2" etc.
+  const getTicketOccupied = (ticket: TicketType): string[] => {
+    if (!selectedShow) return []
+    const theme = getZoneTheme(ticket.name)
+    const prefix = theme.prefix
+    return selectedShow.occupiedSeats.filter((s) => s.startsWith(prefix))
+  }
+
   const toggleSeat = (seat: string) => {
-    if (occupiedSet.has(seat)) return
+    if (!selectedShow) return
+    const theme = getZoneTheme(selectedTicket?.name ?? "")
+    const occupied = new Set(getTicketOccupied(selectedTicket!))
+    if (occupied.has(seat)) return
     setSelectedSeats((prev) => {
       if (prev.includes(seat)) {
         return prev.filter((s) => s !== seat)
@@ -156,31 +180,42 @@ export default function EventDetailPage({ slug }: { slug: string }) {
       if (prev.length < ticketCount) {
         return [...prev, seat]
       }
-      // Replace oldest selection if maximum reached
       return [...prev.slice(1), seat]
     })
   }
-
-  const seats = useMemo(() => {
-    if (!selectedShow) return []
-    return Array.from({ length: selectedShow.totalSeats }, (_, i) => String(i + 1))
-  }, [selectedShow])
-
-  const occupiedSet = useMemo(
-    () => new Set(selectedShow?.occupiedSeats ?? []),
-    [selectedShow]
-  )
 
   const subtotal = selectedTicket ? selectedTicket.price * ticketCount : 0
   const taxAmount = selectedTicket ? Math.round(subtotal * 0.18) : 0
   const totalAmount = subtotal + taxAmount
 
+  const loadRazorpayScript = (): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if ((window as any).Razorpay) {
+        resolve(true)
+        return
+      }
+      const script = document.createElement("script")
+      script.src = "https://checkout.razorpay.com/v1/checkout.js"
+      script.onload = () => resolve(true)
+      script.onerror = () => resolve(false)
+      document.body.appendChild(script)
+    })
+  }
+
   const handleConfirm = async () => {
     if (!selectedShowId || !selectedTicketId || selectedSeats.length === 0) return
     setBookingError(null)
     setIsBooking(true)
+
     try {
-      const res = await fetch("/api/bookings", {
+      // 1. Ensure Razorpay checkout script is loaded
+      const resScript = await loadRazorpayScript()
+      if (!resScript) {
+        throw new Error("Razorpay SDK failed to load. Please check your internet connection.")
+      }
+
+      // 2. Create Razorpay order on server
+      const orderRes = await fetch("/api/razorpay/create-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -189,12 +224,68 @@ export default function EventDetailPage({ slug }: { slug: string }) {
           seatNumbers: selectedSeats,
         }),
       })
-      const data = await res.json().catch(() => null)
-      if (!res.ok) throw new Error(data?.error || "Booking failed. Please try again.")
-      setConfirmation(data.booking)
+
+      const orderData = await orderRes.json()
+      if (!orderRes.ok) {
+        throw new Error(orderData?.error || "Failed to initiate payment")
+      }
+
+      // 3. Open Razorpay Checkout modal
+      const options = {
+        key: orderData.keyId,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: "BookEvents",
+        description: `${event?.title} — ${selectedTicket?.name || "Tickets"} (${selectedSeats.join(", ")})`,
+        image: event?.bannerUrl || undefined,
+        order_id: orderData.orderId,
+        handler: async function (response: any) {
+          try {
+            setIsBooking(true)
+            const verifyRes = await fetch("/api/razorpay/verify-payment", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                showId: selectedShowId,
+                ticketTypeId: selectedTicketId,
+                seatNumbers: selectedSeats,
+              }),
+            })
+
+            const verifyData = await verifyRes.json()
+            if (!verifyRes.ok) {
+              throw new Error(verifyData?.error || "Payment verification failed")
+            }
+
+            setConfirmation(verifyData.booking)
+          } catch (err) {
+            setBookingError(err instanceof Error ? err.message : "Payment verification failed")
+          } finally {
+            setIsBooking(false)
+          }
+        },
+        modal: {
+          ondismiss: function () {
+            setIsBooking(false)
+          },
+        },
+        theme: {
+          color: "#ec4899",
+        },
+      }
+
+      const rzp = new (window as any).Razorpay(options)
+      rzp.on("payment.failed", function (response: any) {
+        setBookingError(response.error?.description || "Payment failed. Please try again.")
+        setIsBooking(false)
+      })
+
+      rzp.open()
     } catch (err) {
       setBookingError(err instanceof Error ? err.message : "Something went wrong.")
-    } finally {
       setIsBooking(false)
     }
   }
@@ -414,47 +505,82 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               )}
             </section>
 
-            {/* ── Venue Seating Map Picture (Uploaded by Organizer) ── */}
+            {/* ── Venue Seating Layout Map (Organizer-Uploaded) ── */}
             {event.venue.layoutImageUrl && (
-              <section className="overflow-hidden rounded-2xl border border-violet-500/25 bg-[#141622] p-5 shadow-lg ring-1 ring-violet-500/10">
-                <div className="mb-3 flex items-center justify-between">
+              <section className="overflow-hidden rounded-2xl border border-violet-500/25 bg-[#141622] shadow-lg ring-1 ring-violet-500/10">
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-violet-500/15 px-5 py-4">
                   <div className="flex items-center gap-2">
                     <LayoutTemplate className="size-4 text-violet-400" />
-                    <h3 className="text-sm font-bold text-white">Venue Seating Layout Map</h3>
+                    <h3 className="text-sm font-bold text-white">Venue Seating Plan</h3>
+                    <span className="rounded-full bg-violet-500/20 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-violet-300">
+                      Reference Map
+                    </span>
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     onClick={() => setIsLayoutLightboxOpen(true)}
-                    className="h-8 gap-1.5 border-violet-500/30 bg-violet-500/10 text-xs font-semibold text-violet-300 hover:bg-violet-500/20"
+                    className="h-7 gap-1.5 border-violet-500/30 bg-violet-500/10 text-[10px] font-bold text-violet-300 hover:bg-violet-500/20"
                   >
-                    <Maximize2 className="size-3.5" /> Zoom Layout
+                    <Maximize2 className="size-3" /> Full View
                   </Button>
                 </div>
-                <p className="mb-3 text-xs text-slate-400">
-                  Inspect the organizer&apos;s seating plan below to see section locations (VIP, Gold, Silver, Stage) before picking your seats.
-                </p>
+
+                {/* Zone Legend Pills */}
+                {selectedShow && selectedShow.ticketTypes.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 border-b border-violet-500/10 px-5 py-3">
+                    <span className="text-[10px] text-slate-500 uppercase tracking-wider">Zones:</span>
+                    {selectedShow.ticketTypes.map((tt) => {
+                      const theme = getZoneTheme(tt.name)
+                      return (
+                        <button
+                          key={tt.id}
+                          type="button"
+                          onClick={() => {
+                            selectTicket(tt.id)
+                          }}
+                          className={`rounded-full px-2.5 py-1 text-[10px] font-bold transition-all ${
+                            selectedTicketId === tt.id
+                              ? theme.badge + " ring-2 " + theme.ring + " scale-105"
+                              : theme.badge + " opacity-60 hover:opacity-100"
+                          }`}
+                        >
+                          {theme.emoji} {tt.name}
+                          <span className="ml-1.5 opacity-60">{formatPrice(tt.price)}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Layout Image with zone overlay */}
                 <div
                   onClick={() => setIsLayoutLightboxOpen(true)}
-                  className="group relative cursor-pointer overflow-hidden rounded-xl border border-violet-500/25 bg-black/40 transition-all hover:border-violet-400/50 hover:shadow-xl"
+                  className="group relative cursor-pointer overflow-hidden"
                 >
-                  <div className="relative w-full" style={{ paddingTop: "45%" }}>
+                  <div className="relative w-full" style={{ paddingTop: "50%" }}>
                     <Image
                       src={event.venue.layoutImageUrl}
                       alt="Venue seating layout map"
                       fill
                       sizes="(max-width: 1024px) 100vw, 60vw"
-                      className="object-contain p-2"
+                      className="object-contain p-3"
                       unoptimized
                     />
                   </div>
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/35 group-hover:opacity-100">
+                  {/* Hover overlay */}
+                  <div className="absolute inset-0 flex items-end justify-center pb-4 bg-black/0 opacity-0 transition-all group-hover:bg-black/30 group-hover:opacity-100">
                     <span className="flex items-center gap-1.5 rounded-full bg-violet-900/90 px-4 py-2 text-xs font-bold text-white shadow-lg backdrop-blur-sm">
-                      <Maximize2 className="size-3.5" /> Click to Zoom Layout
+                      <Maximize2 className="size-3.5" /> Click to Zoom
                     </span>
                   </div>
                 </div>
+
+                <p className="px-5 py-2.5 text-[11px] text-slate-500">
+                  👆 Tap a zone above to jump directly to seat selection for that area.
+                </p>
               </section>
             )}
 
@@ -462,14 +588,14 @@ export default function EventDetailPage({ slug }: { slug: string }) {
             <section>
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-base font-bold">1 · Choose a show</h2>
-                {selectedShow && (
+                {selectedShow && selectedTicket && (
                   <button
                     type="button"
-                    onClick={() => setIsQuantityModalOpen(true)}
+                    onClick={() => setIsSetupModalOpen(true)}
                     className="flex items-center gap-1.5 rounded-full border border-pink-500/30 bg-pink-500/10 px-3 py-1 text-xs font-bold text-pink-300 hover:bg-pink-500/20"
                   >
                     <Users className="size-3.5" />
-                    {ticketCount} {ticketCount === 1 ? "Ticket" : "Tickets"} (Change)
+                    {ticketCount} × {selectedTicket.name} (Change)
                   </button>
                 )}
               </div>
@@ -527,7 +653,7 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                   <h2 className="text-base font-bold">2 · Select your seats</h2>
                   <button
                     type="button"
-                    onClick={() => setIsQuantityModalOpen(true)}
+                    onClick={() => setIsSetupModalOpen(true)}
                     className="flex items-center gap-1 text-xs font-semibold text-pink-300 hover:underline"
                   >
                     <Users className="size-3.5" /> {ticketCount} Tickets
@@ -537,97 +663,96 @@ export default function EventDetailPage({ slug }: { slug: string }) {
               </section>
             )}
 
-            {/* Step 2 (Numeric view): Choose your ticket type */}
+            {/* Step 2 (GA/Numeric): Selected zone summary + seat pick CTA */}
             {selectedShow && !isSeatShow && (
-              <section>
-                <h2 className="mb-3 text-base font-bold">2 · Choose your ticket type</h2>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {selectedShow.ticketTypes.map((ticket) => {
-                    const soldOut = ticket.remainingQuantity <= 0
-                    const isSelected = selectedTicketId === ticket.id
-                    return (
-                      <button
-                        key={ticket.id}
-                        type="button"
-                        disabled={soldOut}
-                        onClick={() => selectTicket(ticket.id)}
-                        className={`flex items-center justify-between rounded-xl border p-4 text-left transition-all ${
-                          soldOut
-                            ? "cursor-not-allowed border-white/5 bg-white/[0.02] opacity-50"
-                            : isSelected
-                              ? "border-pink-400 bg-pink-500/10 ring-2 ring-pink-500/20"
-                              : "border-white/10 bg-[#16161d] hover:border-white/25"
-                        }`}
-                      >
-                        <div>
-                          <p className="text-sm font-bold">{ticket.name}</p>
-                          <p className="mt-0.5 text-[11px] text-slate-400">
-                            {ticket.remainingQuantity} left
-                          </p>
-                        </div>
-                        <span className="text-base font-black text-pink-300">
-                          {formatPrice(ticket.price)}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </section>
-            )}
+              <section className="space-y-3">
+                <h2 className="text-base font-bold">2 · Your ticket selection</h2>
 
-            {/* Step 3: Select your seats */}
-            {selectedShow && selectedTicket && !isSeatShow && (
-              <section>
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-base font-bold">
-                    3 · Select your {ticketCount} {ticketCount === 1 ? "seat" : "seats"}
-                  </h2>
-                  <span className="rounded-full bg-pink-500/15 px-3 py-1 text-xs font-bold text-pink-300">
-                    {selectedSeats.length} of {ticketCount} selected
-                  </span>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-[#16161d] p-6">
-                  <div className="mb-6 flex items-center justify-center">
-                    <div className="w-3/4 rounded-t-2xl bg-white/10 py-2 text-center text-[10px] uppercase tracking-[0.3em] text-slate-400">
-                      Screen / Stage Position
+                {!selectedTicket ? (
+                  /* Prompt to open setup modal */
+                  <button
+                    type="button"
+                    onClick={() => setIsSetupModalOpen(true)}
+                    className="flex w-full items-center justify-between rounded-2xl border border-dashed border-pink-500/30 bg-pink-500/5 p-5 text-left transition-all hover:border-pink-400/50 hover:bg-pink-500/10"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex size-10 items-center justify-center rounded-xl bg-pink-500/20 text-xl">
+                        🎟️
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-white">Choose zone &amp; quantity</p>
+                        <p className="mt-0.5 text-xs text-slate-400">Tap to select your ticket type and seats</p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="mx-auto grid max-w-lg grid-cols-8 gap-2">
-                    {seats.map((seat) => {
-                      const occupied = occupiedSet.has(seat)
-                      const isSelected = selectedSeats.includes(seat)
-                      return (
+                    <span className="flex size-8 items-center justify-center rounded-xl bg-pink-500/20 text-pink-300">
+                      →
+                    </span>
+                  </button>
+                ) : (
+                  /* Zone + qty summary card, clickable to change */
+                  (() => {
+                    const theme = getZoneTheme(selectedTicket.name)
+                    return (
+                      <div className="space-y-3">
+                        {/* Selected zone info bar */}
+                        <div className={`flex items-center justify-between rounded-2xl border p-4 ${theme.border} bg-gradient-to-r from-[#14141f] to-[#0d0d1a]`}>
+                          <div className="flex items-center gap-3">
+                            <span className={`flex size-9 items-center justify-center rounded-xl text-lg ${theme.badge}`}>
+                              {theme.emoji}
+                            </span>
+                            <div>
+                              <p className="text-sm font-bold text-white">{selectedTicket.name}</p>
+                              <p className={`text-[11px] font-semibold ${theme.text}`}>
+                                {formatPrice(selectedTicket.price)} × {ticketCount} ticket{ticketCount > 1 ? "s" : ""}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setIsSetupModalOpen(true)}
+                            className="rounded-xl border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-bold text-slate-300 hover:bg-white/10 hover:text-white transition-all"
+                          >
+                            Change
+                          </button>
+                        </div>
+
+                        {/* Pick seats CTA */}
                         <button
-                          key={seat}
                           type="button"
-                          disabled={occupied}
-                          onClick={() => toggleSeat(seat)}
-                          aria-label={`Seat ${seat}`}
-                          className={`flex aspect-square items-center justify-center rounded-md text-[9px] font-bold transition-all ${
-                            occupied
-                              ? "cursor-not-allowed bg-white/[0.04] text-slate-600"
-                              : isSelected
-                                ? "bg-pink-500 text-white shadow-lg shadow-pink-950/40 ring-2 ring-pink-300"
-                                : "bg-white/10 text-slate-300 hover:bg-pink-500/40 hover:text-white"
-                          }`}
+                          onClick={() => setIsSeatModalOpen(true)}
+                          className={`group relative w-full overflow-hidden rounded-2xl border p-5 text-left transition-all ${theme.border} bg-gradient-to-br from-[#14141f] to-[#0d0d1a] hover:brightness-110`}
                         >
-                          {seat}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className={`flex size-10 items-center justify-center rounded-xl text-xl ${theme.badge}`}>
+                                🪑
+                              </div>
+                              <div>
+                                <p className="text-sm font-bold text-white">Pick your seats</p>
+                                <p className="mt-0.5 text-xs text-slate-400">
+                                  {selectedSeats.length > 0
+                                    ? `${selectedSeats.length}/${ticketCount} selected: ${selectedSeats.join(", ")}`
+                                    : `Choose ${ticketCount} seat${ticketCount > 1 ? "s" : ""} from the interactive map`
+                                  }
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {selectedSeats.length > 0 && (
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${theme.badge}`}>
+                                  {selectedSeats.length}/{ticketCount} ✓
+                                </span>
+                              )}
+                              <span className="flex size-8 items-center justify-center rounded-xl bg-white/10 text-white group-hover:bg-white/15">
+                                →
+                              </span>
+                            </div>
+                          </div>
                         </button>
-                      )
-                    })}
-                  </div>
-                  <div className="mt-6 flex flex-wrap items-center justify-center gap-4 text-[10px] text-slate-400">
-                    <span className="flex items-center gap-1.5">
-                      <span className="size-3 rounded bg-pink-500" /> Selected ({selectedSeats.length}/{ticketCount})
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="size-3 rounded bg-white/10" /> Available
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="size-3 rounded bg-white/[0.04]" /> Taken
-                    </span>
-                  </div>
-                </div>
+                      </div>
+                    )
+                  })()
+                )}
               </section>
             )}
           </div>
@@ -646,13 +771,21 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                 </p>
               ) : !selectedTicket || selectedSeats.length === 0 || !selectedShow ? (
                 <div className="space-y-2 rounded-xl bg-white/[0.04] p-4 text-xs text-slate-400">
-                  <p>Select a show, ticket type and seat(s) to see your total.</p>
+                  <p>Select a show, zone and seat(s) to see your total.</p>
+                  {selectedShow && !selectedTicket && (
+                    <p className="text-pink-300/70">👆 Pick a zone from the map or step 2.</p>
+                  )}
+                  {selectedTicket && selectedSeats.length === 0 && (
+                    <p className="text-amber-300/70">
+                      Now pick {ticketCount} seat{ticketCount > 1 ? "s" : ""} from the grid.
+                    </p>
+                  )}
                   {selectedTicket && (
                     <div className="mt-2 flex items-center justify-between border-t border-white/10 pt-2 text-white">
                       <span>{ticketCount} Ticket(s) selected</span>
                       <button
                         type="button"
-                        onClick={() => setIsQuantityModalOpen(true)}
+                        onClick={() => setIsSetupModalOpen(true)}
                         className="text-xs text-pink-400 hover:underline"
                       >
                         Change ({ticketCount})
@@ -670,13 +803,25 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                       </p>
                     </div>
                   </div>
+
+                  {/* Selected seat chips */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedSeats.map((s) => {
+                      const theme = getZoneTheme(selectedTicket.name)
+                      return (
+                        <span
+                          key={s}
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${theme.badge}`}
+                        >
+                          {s}
+                        </span>
+                      )
+                    })}
+                  </div>
+
                   <div className="flex justify-between text-xs text-slate-300">
                     <span>Quantity</span>
                     <span className="font-bold text-white">{ticketCount} ticket(s)</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-slate-300">
-                    <span>Selected Seat(s)</span>
-                    <span className="font-bold text-pink-300">{selectedSeats.join(", ")}</span>
                   </div>
                   <div className="flex justify-between text-xs text-slate-300">
                     <span>Ticket price ({ticketCount} × {formatPrice(selectedTicket.price)})</span>
@@ -709,16 +854,18 @@ export default function EventDetailPage({ slug }: { slug: string }) {
                 ) : !isSeatShow ? (
                   <Button
                     onClick={handleConfirm}
-                    disabled={!selectedTicket || selectedSeats.length === 0 || isBooking}
+                    disabled={!selectedTicket || selectedSeats.length < ticketCount || isBooking}
                     className="w-full bg-gradient-to-r from-pink-500 to-violet-600 py-3 text-xs font-bold text-white shadow-lg disabled:opacity-40"
                   >
                     {isBooking ? (
                       <span className="flex items-center justify-center gap-2">
                         <Loader2 className="size-4 animate-spin" />
-                        Confirming...
+                        Processing Payment...
                       </span>
                     ) : (
-                      `Confirm booking for ${selectedSeats.length} seat(s)`
+                      selectedSeats.length >= ticketCount
+                        ? `Pay ${formatPrice(totalAmount)} & Confirm`
+                        : `Pick ${ticketCount - selectedSeats.length} more seat(s)`
                     )}
                   </Button>
                 ) : null}
@@ -732,16 +879,23 @@ export default function EventDetailPage({ slug }: { slug: string }) {
         </div>
       </main>
 
-      {/* ── Ticket Quantity Popup Modal ── */}
-      <TicketQuantityModal
-        isOpen={isQuantityModalOpen}
-        onClose={() => setIsQuantityModalOpen(false)}
-        initialQuantity={ticketCount}
-        onSelectQuantity={(count) => {
-          setTicketCount(count)
-          setSelectedSeats([])
-        }}
-      />
+      {/* ── Booking Setup Modal (zone + qty, 2-step) ── */}
+      {selectedShow && (
+        <BookingSetupModal
+          isOpen={isSetupModalOpen}
+          onClose={() => setIsSetupModalOpen(false)}
+          eventTitle={event.title}
+          showDate={selectedShow.startTime}
+          ticketTypes={selectedShow.ticketTypes}
+          initialTicketTypeId={selectedTicketId}
+          initialQuantity={ticketCount}
+          onConfirm={(ticketTypeId, qty) => {
+            setSelectedTicketId(ticketTypeId)
+            setTicketCount(qty)
+            setSelectedSeats([])
+          }}
+        />
+      )}
 
       {/* ── Venue Seating Layout Lightbox Modal ── */}
       {event.venue.layoutImageUrl && (
@@ -749,6 +903,23 @@ export default function EventDetailPage({ slug }: { slug: string }) {
           isOpen={isLayoutLightboxOpen}
           onClose={() => setIsLayoutLightboxOpen(false)}
           imageUrl={event.venue.layoutImageUrl}
+          venueName={event.venue.name}
+        />
+      )}
+
+      {/* ── Seat Selection Modal (full-screen, zoomable) ── */}
+      {selectedTicket && selectedShow && (
+        <SeatSelectionModal
+          isOpen={isSeatModalOpen}
+          onClose={() => setIsSeatModalOpen(false)}
+          ticketTypeName={selectedTicket.name}
+          ticketPrice={selectedTicket.price}
+          totalSeats={selectedTicket.quantity}
+          occupiedSeats={getTicketOccupied(selectedTicket)}
+          initialSelected={selectedSeats}
+          maxSelect={ticketCount}
+          onConfirm={(seats) => setSelectedSeats(seats)}
+          layoutImageUrl={event.venue.layoutImageUrl}
           venueName={event.venue.name}
         />
       )}
